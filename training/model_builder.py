@@ -117,6 +117,18 @@ class ModelBuilder:
         combined = combined.dropna()
         X_clean = combined[feature_cols].astype(float)
         y_clean = combined[target].astype(float)
+        
+        # Preserve the original datetime index
+        if hasattr(df.index, 'dtype') and 'datetime' in str(df.index.dtype):
+            # Use the index from the cleaned combined dataframe
+            X_clean.index = combined.index
+            y_clean.index = combined.index
+        elif 'Datetime' in df.columns:
+            # If Datetime is a column, use it as index
+            datetime_values = df.loc[combined.index, 'Datetime']
+            X_clean.index = pd.to_datetime(datetime_values)
+            y_clean.index = pd.to_datetime(datetime_values)
+        
         return X_clean, y_clean
 
     @staticmethod
@@ -128,6 +140,18 @@ class ModelBuilder:
         combined = combined.dropna()
         X_clean = combined[feature_cols].astype(float)
         Y_clean = combined[targets].astype(float)
+        
+        # Preserve the original datetime index
+        if hasattr(df.index, 'dtype') and 'datetime' in str(df.index.dtype):
+            # Use the index from the cleaned combined dataframe
+            X_clean.index = combined.index
+            Y_clean.index = combined.index
+        elif 'Datetime' in df.columns:
+            # If Datetime is a column, use it as index
+            datetime_values = df.loc[combined.index, 'Datetime']
+            X_clean.index = pd.to_datetime(datetime_values)
+            Y_clean.index = pd.to_datetime(datetime_values)
+        
         return X_clean, Y_clean
 
     @staticmethod
@@ -210,6 +234,9 @@ class ModelBuilder:
             Xtr, Xte, ytr, yte = train_test_split(
                 X_t, y_t, test_size=0.2, random_state=42, shuffle=False
             )
+            
+            # Print train/test date ranges
+            print(f"[ModelBuilder] Zone {z} - Train: {pd.to_datetime(Xtr.index.min())} to {pd.to_datetime(Xtr.index.max())} | Test: {pd.to_datetime(Xte.index.min())} to {pd.to_datetime(Xte.index.max())}")
             temp_model = Pipeline(
                 steps=[
                     ("scaler", MinMaxScaler()),
@@ -234,7 +261,10 @@ class ModelBuilder:
                 X_h, y_h = self._split_xy(sub, "室内湿度", temp_feats)
                 Xtrh, Xteh, ytrh, yteh = train_test_split(
                     X_h, y_h, test_size=0.2, random_state=42, shuffle=False
-                ) 
+                )
+                
+                # Print humidity train/test date ranges
+                print(f"[ModelBuilder] Zone {z} - Humidity Train: {pd.to_datetime(Xtrh.index.min())} to {pd.to_datetime(Xtrh.index.max())} | Test: {pd.to_datetime(Xteh.index.min())} to {pd.to_datetime(Xteh.index.max())}") 
                 hum_model = Pipeline(
                     steps=[
                         ("scaler", MinMaxScaler()),
@@ -335,6 +365,9 @@ class ModelBuilder:
                     X_p, y_p, test_size=0.2, random_state=42, shuffle=False
                 )
                 wtrp = None
+            
+            # Print power train/test date ranges
+            print(f"[ModelBuilder] Zone {z} - Power Train: {pd.to_datetime(Xtrp.index.min())} to {pd.to_datetime(Xtrp.index.max())} | Test: {pd.to_datetime(Xtep.index.min())} to {pd.to_datetime(Xtep.index.max())}")
             # Remove MinMaxScaler - it's causing constant predictions
             power_model = XGBRegressor(
                 n_estimators=600,
@@ -370,6 +403,9 @@ class ModelBuilder:
                         Xm_tr, Xm_te, Ym_tr, Ym_te = train_test_split(
                             Xm, Ym, test_size=0.2, random_state=42, shuffle=False
                         )
+                        
+                        # Print multi-output train/test date ranges
+                        print(f"[ModelBuilder] Zone {z} - Multi-output Train: {pd.to_datetime(Xm_tr.index.min())} to {pd.to_datetime(Xm_tr.index.max())} | Test: {pd.to_datetime(Xm_te.index.min())} to {pd.to_datetime(Xm_te.index.max())}")
                         # Remove MinMaxScaler - XGBoost handles features internally
                         base_xgb = XGBRegressor(
                             n_estimators=500,
