@@ -205,8 +205,8 @@ def run_optimization_for_store(
     print(f"🚀 {store_name}の最適化パイプライン開始")
 
     # 最適化システムの初期化（前処理をスキップ）
-    enable_preprocessing = True  # 前処理を行うかどうか
-    skip_aggregation = False  # 集約をスキップするかどうか
+    enable_preprocessing = False  # 前処理を行うかどうか
+    skip_aggregation = True  # 集約をスキップするかどうか
     optimizer = AirconOptimizer(
         store_name,
         enable_preprocessing=enable_preprocessing,
