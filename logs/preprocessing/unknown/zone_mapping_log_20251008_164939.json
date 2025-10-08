@@ -1,0 +1,54 @@
+{
+  "store_name": "unknown",
+  "timestamp": "2025-10-08T16:49:39.085924",
+  "zones": {
+    "Area 4": {
+      "zone_name": "Area 4",
+      "total_records": 390114,
+      "categorical_mappings": {
+        "A/C ON/OFF": {
+          "original_values": {
+            "OFF": 338438,
+            "ON": 51676
+          },
+          "mapping": {
+            "OFF": 0,
+            "ON": 1
+          },
+          "mapped_count": 2,
+          "unmapped_count": 0
+        },
+        "A/C Mode": {
+          "original_values": {
+            "COOL": 250661,
+            "HEAT": 128115,
+            "FAN": 11229
+          },
+          "mapping": {
+            "COOL": 1,
+            "HEAT": 2,
+            "FAN": 3
+          },
+          "mapped_count": 3,
+          "unmapped_count": 0
+        },
+        "A/C Fan Speed": {
+          "original_values": {
+            "Low": 44492,
+            "High": 3736,
+            "Medium": 3445,
+            "Auto": 3
+          },
+          "mapping": {
+            "Low": 1,
+            "High": 3,
+            "Medium": 2,
+            "Auto": 0
+          },
+          "mapped_count": 4,
+          "unmapped_count": 0
+        }
+      }
+    }
+  }
+}

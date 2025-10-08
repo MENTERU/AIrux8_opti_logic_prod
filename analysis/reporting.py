@@ -16,12 +16,50 @@ from analysis.dashboards import (
 
 
 def reset_outputs(store_name: str = "Clea") -> None:
-    """分析/可視化の出力をリセット（削除→フォルダ再作成）"""
+    """分析/可視化の出力をリセット（SHAPファイルを保持）"""
     out_dir = "analysis/output"
     if os.path.isdir(out_dir):
+        # Preserve SHAP PNG files before deletion
+        shap_files_backup = {}
+        for root, dirs, files in os.walk(out_dir):
+            for file in files:
+                if file.startswith("shap_") and file.endswith(".png"):
+                    file_path = os.path.join(root, file)
+                    try:
+                        # Read and backup the file content
+                        with open(file_path, 'rb') as f:
+                            shap_files_backup[file_path] = f.read()
+                        print(f"💾 Backing up SHAP file: {file_path}")
+                    except Exception as e:
+                        print(f"⚠️ Could not backup SHAP file {file_path}: {e}")
+        
+        # Delete the directory
         shutil.rmtree(out_dir)
-    os.makedirs(out_dir, exist_ok=True)
-    print(f"🧹 出力をリセットしました: {out_dir}")
+        
+        # Recreate directory structure
+        os.makedirs(out_dir, exist_ok=True)
+        
+        # Restore SHAP files
+        for file_path, file_content in shap_files_backup.items():
+            try:
+                # Recreate the directory structure
+                shap_dir = os.path.dirname(file_path)
+                os.makedirs(shap_dir, exist_ok=True)
+                
+                # Restore the file content
+                with open(file_path, 'wb') as f:
+                    f.write(file_content)
+                print(f"✅ Restored SHAP file: {file_path}")
+            except Exception as e:
+                print(f"⚠️ Could not restore SHAP file {file_path}: {e}")
+        
+        if shap_files_backup:
+            print(f"🧹 出力をリセットしました: {out_dir} ({len(shap_files_backup)}個のSHAPファイルを保持)")
+        else:
+            print(f"🧹 出力をリセットしました: {out_dir}")
+    else:
+        os.makedirs(out_dir, exist_ok=True)
+        print(f"📁 出力ディレクトリを作成しました: {out_dir}")
 
 
 def generate_all_reports(store_name: str = "Clea"):
