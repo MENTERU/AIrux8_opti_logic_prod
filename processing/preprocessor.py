@@ -1,3 +1,4 @@
+from processing.temp_range_export import export_temp_range_stats
 import glob
 import os
 from typing import List, Optional, Tuple
@@ -412,3 +413,17 @@ class DataPreprocessor:
                 index=False,
                 encoding="utf-8-sig",
             )
+
+         # 自動Excel出力処理 (AC_setvalue_range_analysis_*.xlsx)
+        try:
+            from processing.temp_range_export import export_temp_range_stats
+
+            print("[DataPreprocessor] 自動Excel出力を開始します...")
+            export_temp_range_stats(
+                ac_df=ac_control_data,
+                store_name=self.store_name,
+                output_dir=self.output_dir
+            )
+        except Exception as e:
+            print(f"[DataPreprocessor] Failed to export monthly range Excel: {e}")
+
