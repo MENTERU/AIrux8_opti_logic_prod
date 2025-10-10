@@ -258,19 +258,6 @@ def optimize_zone_period(
                             )
                             power_pred = base_power_pred * unit_count
 
-                        # # Handle negative power predictions (model issue, not data issue)
-                        # if power_pred < 0:
-                        #     # For ON modes, use a minimum reasonable power consumption
-                        #     if md != "OFF" and md != 0:
-                        #         # Use 10% of unit count as minimum power (reasonable for AC units)
-                        #         power_pred = max(0.1 * unit_count, 0.5)
-                        #         print(
-                        #             f"[PeriodOptimizer] Warning: Negative power prediction for {zone_name} at {timestamp}, mode {md}. Set to {power_pred:.2f} kWh"
-                        #         )
-                        #     else:
-                        #         # For OFF mode, power should be 0
-                        #         power_pred = 0.0
-
                         combination = {
                             "set_temp": sp,
                             "mode": md,
@@ -280,11 +267,13 @@ def optimize_zone_period(
                             "outside_temp": weather["outdoor_temp"],
                         }
 
-                        all_combinations.append(combination)
+                        # 負の電力予測値でない組み合わせのみ追加
+                        if power_pred > 0:
+                            all_combinations.append(combination)
 
-                        # 快適範囲内の組み合わせをフィルタ
-                        if comfort_min <= temp_pred <= comfort_max:
-                            valid_combinations.append(combination)
+                            # 快適範囲内の組み合わせをフィルタ
+                            if comfort_min <= temp_pred <= comfort_max:
+                                valid_combinations.append(combination)
 
             # 最適な組み合わせを選択
             if valid_combinations:
@@ -345,29 +334,18 @@ def optimize_zone_period(
                                 )
                                 power_pred = base_power_pred * unit_count
 
-                            # # Handle negative power predictions (model issue, not data issue)
-                            # if power_pred < 0:
-                            #     # For ON modes, use a minimum reasonable power consumption
-                            #     if md != "OFF" and md != 0:
-                            #         # Use 10% of unit count as minimum power (reasonable for AC units)
-                            #         power_pred = max(0.1 * unit_count, 0.5)
-                            #         print(
-                            #             f"[PeriodOptimizer] Warning: Negative power prediction for {zone_name} at {timestamp}, mode {md}. Set to {power_pred:.2f} kWh"
-                            #         )
-                            #     else:
-                            #         # For OFF mode, power should be 0
-                            #         power_pred = 0.0
-
-                            all_combinations.append(
-                                {
-                                    "set_temp": closest_temp,
-                                    "mode": md,
-                                    "fan": fs,
-                                    "pred_temp": temp_pred,
-                                    "pred_power": power_pred,
-                                    "outside_temp": weather["outdoor_temp"],
-                                }
-                            )
+                            # 負の電力予測値でない組み合わせのみ追加
+                            if power_pred > 0:
+                                all_combinations.append(
+                                    {
+                                        "set_temp": closest_temp,
+                                        "mode": md,
+                                        "fan": fs,
+                                        "pred_temp": temp_pred,
+                                        "pred_power": power_pred,
+                                        "outside_temp": weather["outdoor_temp"],
+                                    }
+                                )
 
                     best_combination = min(
                         all_combinations,
@@ -485,3 +463,4 @@ class PeriodOptimizer:
         print(f"[PeriodOptimizer] Optimized {len(results)} zones")
 
         return results
+

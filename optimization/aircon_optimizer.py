@@ -99,17 +99,23 @@ class AirconOptimizer:
         return os.path.join(self.plan_dir, filename)
 
     def _load_weather_forecast(
-        self, start_date: str, end_date: str
+        self,
+        start_date: str,
+        end_date: str,
+        weather_api_key: Optional[str] = None,
+        coordinates: Optional[str] = None,
     ) -> Optional[pd.DataFrame]:
         """
-        Load weather forecast from cached file if it exists
+        Load weather forecast from cached file if it exists, otherwise fetch from API
 
         Args:
             start_date: Start date in YYYY-MM-DD format
             end_date: End date in YYYY-MM-DD format
+            weather_api_key: Weather API key for fetching data if cache is missing
+            coordinates: Coordinates for weather API
 
         Returns:
-            Weather DataFrame if file exists, None otherwise
+            Weather DataFrame if file exists or can be fetched from API, None otherwise
         """
         forecast_path = self._get_weather_forecast_path(start_date, end_date)
 
@@ -130,7 +136,37 @@ class AirconOptimizer:
                 return None
         else:
             print(f"[Run] No cached weather forecast found: {forecast_path}")
-            return None
+
+            # Try to fetch weather data from API if credentials are provided
+            if weather_api_key and coordinates:
+                print("[Run] APIから天候データを取得...")
+                try:
+                    from processing.utilities.weatherapi_client import (
+                        VisualCrossingWeatherAPIDataFetcher,
+                    )
+
+                    weather_df = VisualCrossingWeatherAPIDataFetcher(
+                        coordinates=coordinates,
+                        start_date=start_date,
+                        end_date=end_date,
+                        unit="metric",
+                        api_key=weather_api_key,
+                    ).fetch()
+                    if weather_df is not None:
+                        self._save_weather_forecast(weather_df, start_date, end_date)
+                        print(
+                            "[Run] 天候データをAPIから取得し、キャッシュに保存しました"
+                        )
+                        return weather_df
+                    else:
+                        print("[Run] APIから天候データを取得できませんでした")
+                        return None
+                except Exception as e:
+                    print(f"[Run] 天候データ取得エラー: {e}")
+                    return None
+            else:
+                print("[Run] 天候データが見つかりません（APIキーまたは座標が未設定）")
+                return None
 
     def _save_weather_forecast(
         self, weather_df: pd.DataFrame, start_date: str, end_date: str
@@ -334,34 +370,14 @@ class AirconOptimizer:
         # ----------------------------
         weather_df = None
 
-        # First, try to load from cached file
-        weather_df = self._load_weather_forecast(start_date, end_date)
+        # Load weather data (from cache or API)
+        weather_df = self._load_weather_forecast(
+            start_date, end_date, weather_api_key, coordinates
+        )
 
-        # If no cached data found, fetch from API
-        if weather_df is None and weather_api_key:
-            print("[Run] No cached weather data found. Fetching from API...")
-            try:
-                weather_df = VisualCrossingWeatherAPIDataFetcher(
-                    coordinates=coordinates,
-                    start_date=start_date,
-                    end_date=end_date,
-                    unit="metric",
-                    api_key=weather_api_key,
-                ).fetch()
-                print(f"[Run] Weather API result: {weather_df is not None}")
-                if weather_df is not None:
-                    print(f"[Run] Weather data shape: {weather_df.shape}")
-                    print(f"[Run] Weather data columns: {list(weather_df.columns)}")
-
-                    # Save the fetched data to cache
-                    self._save_weather_forecast(weather_df, start_date, end_date)
-            except Exception as e:
-                print(f"[Run] Weather API exception: {e}")
-                weather_df = None
-        elif weather_df is not None:
-            print("[Run] Using cached weather data - no API call needed")
-        else:
-            print("[Run] No weather API key provided and no cached data found")
+        # If no weather data found
+        if weather_df is None:
+            print("[Run] 天候データが見つかりません")
 
         # 天候データの統合（履歴 + 未来）
         combined_weather_df = None
@@ -630,22 +646,9 @@ class AirconOptimizer:
         # 天候データの取得
         weather_df = None
         if start_date and end_date:
-            weather_df = self._load_weather_forecast(start_date, end_date)
-
-            if weather_df is None and weather_api_key:
-                print("[Aggregate] APIから天候データを取得...")
-                try:
-                    weather_df = VisualCrossingWeatherAPIDataFetcher(
-                        coordinates=coordinates,
-                        start_date=start_date,
-                        end_date=end_date,
-                        unit="metric",
-                        api_key=weather_api_key,
-                    ).fetch()
-                    if weather_df is not None:
-                        self._save_weather_forecast(weather_df, start_date, end_date)
-                except Exception as e:
-                    print(f"[Aggregate] 天候データ取得エラー: {e}")
+            weather_df = self._load_weather_forecast(
+                start_date, end_date, weather_api_key, coordinates
+            )
 
         # 天候データの統合
         combined_weather_df = None
@@ -760,6 +763,12 @@ class AirconOptimizer:
             start_date = today.strftime("%Y-%m-%d")
             end_date = (today + pd.Timedelta(days=3)).strftime("%Y-%m-%d")
 
+        # 座標の設定（マスタデータから取得）
+        if coordinates is None:
+            coordinates = self.master.get("store_info", {}).get(
+                "coordinates", "35.681236%2C139.767125"
+            )
+
         # モデルの読み込み
         from training.model_builder import ModelBuilder
 
@@ -771,7 +780,9 @@ class AirconOptimizer:
             return None
 
         # 天候データの読み込み
-        weather_df = self._load_weather_forecast(start_date, end_date)
+        weather_df = self._load_weather_forecast(
+            start_date, end_date, weather_api_key, coordinates
+        )
         if weather_df is None:
             print("[Optimize] 天候データが見つかりません")
             return None
