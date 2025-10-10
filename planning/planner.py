@@ -77,7 +77,7 @@ class Planner:
                 s = zs.get(t, {})
                 # Check if mode is OFF to determine OnOFF status
                 mode = s.get("mode", FALLBACK_MODE_CODE) if s else FALLBACK_MODE_CODE
-                is_off = (mode == "OFF" or mode == 0 or str(mode).upper() == "OFF")
+                is_off = mode == "OFF" or mode == 0 or str(mode).upper() == "OFF"
                 rec[f"{z}_OnOFF"] = "OFF" if is_off else "ON"
                 rec[f"{z}_Mode"] = (
                     self._mode_text(s.get("mode", FALLBACK_MODE_CODE))
@@ -91,9 +91,11 @@ class Planner:
                     else FALLBACK_FAN_LABEL
                 )
                 # 予測電力・予測室温（可視化用）
-                rec[f"{z}_PredPower"] = float(s.get("pred_power", 0.0)) if s else 0.0
+                rec[f"{z}_PredPower"] = (
+                    round(float(s.get("pred_power", 0.0)), 2) if s else 0.0
+                )
                 rec[f"{z}_PredTemp"] = (
-                    float(s.get("pred_temp", np.nan)) if s else np.nan
+                    round(float(s.get("pred_temp", np.nan)), 2) if s else np.nan
                 )
             rows.append(rec)
         ctrl_df = pd.DataFrame(rows)
@@ -126,8 +128,10 @@ class Planner:
                 s = schedule.get(z, {}).get(t, {})
                 for u in units:
                     # Check if mode is OFF to determine OnOFF status
-                    mode = s.get("mode", FALLBACK_MODE_CODE) if s else FALLBACK_MODE_CODE
-                    is_off = (mode == "OFF" or mode == 0 or str(mode).upper() == "OFF")
+                    mode = (
+                        s.get("mode", FALLBACK_MODE_CODE) if s else FALLBACK_MODE_CODE
+                    )
+                    is_off = mode == "OFF" or mode == 0 or str(mode).upper() == "OFF"
                     rec[f"{u}_OnOFF"] = "OFF" if is_off else "ON"
                     rec[f"{u}_Mode"] = (
                         self._mode_text(s.get("mode", FALLBACK_MODE_CODE))
