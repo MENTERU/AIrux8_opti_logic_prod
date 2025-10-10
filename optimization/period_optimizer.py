@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-期間最適化システム
-================
-計算期間全体で評価する最適化システム
-- 電力: 合計
-- 室温: 平均（執務時間内のみ）
+期間最適化システム（簡略化版）
+============================
+各時刻で独立して最適化するシステム
+- 電力: 各時刻で最小消費量を選択
+- 室温: 快適範囲内を優先、範囲外は最も涼しい温度を選択
+- ビームサーチを廃止し、シンプルなフィルタ+選択方式を採用
 """
 
 import multiprocessing as mp
@@ -20,18 +21,63 @@ from processing.utilities.category_mapping_loader import normalize_candidate_val
 from training.model_builder import EnvPowerModels
 
 
+def filter_allowed_modes(previous_mode, mode_candidates: List) -> List:
+    """
+    モード選択ルールに基づいて許可されるモードをフィルタリング
+
+    Mode Selection Rules:
+    - If previous mode was anything other than "HEAT":
+      → Next mode can only be "OFF", "FAN", or "COOL"
+    - If previous mode was "HEAT":
+      → Next mode can only be "OFF" or "FAN"
+
+    Args:
+        previous_mode: 前回のモード (例: "COOL", "HEAT", "FAN", "OFF" or numeric code)
+        mode_candidates: 候補モードのリスト
+
+    Returns:
+        許可されたモードのリスト
+    """
+    if previous_mode is None:
+        # 初回は制約なし
+        return mode_candidates
+
+    # Convert previous mode to string and normalize to uppercase for comparison
+    prev_mode_str = str(previous_mode).upper()
+
+    # Mode codes: COOL=1, HEAT=2, FAN=3, OFF=0
+    # Define allowed transitions based on previous mode
+    if prev_mode_str == "HEAT" or prev_mode_str == "2":  # HEAT mode (code 2)
+        # From HEAT: only OFF or FAN allowed
+        allowed = {"OFF", "FAN", "0", "3"}  # OFF=0, FAN=3
+    else:
+        # From any other mode (COOL=1, FAN=3, OFF=0): OFF, FAN, or COOL allowed
+        allowed = {"OFF", "FAN", "COOL", "0", "1", "3"}  # OFF=0, COOL=1, FAN=3
+
+    # Filter candidates to only include allowed modes
+    filtered_modes = [mode for mode in mode_candidates if str(mode).upper() in allowed]
+
+    # If no modes are allowed (shouldn't happen with proper setup), return all candidates
+    if not filtered_modes:
+        return mode_candidates
+
+    return filtered_modes
+
+
 def optimize_zone_period(
     zone_name: str,
     zone_data: dict,
     models: EnvPowerModels,
     date_range: pd.DatetimeIndex,
     weather_df: pd.DataFrame,
-    comfort_w: float,
-    power_w: float,
 ) -> Tuple[str, Dict[pd.Timestamp, dict]]:
     """
-    時刻別の意思決定を許容しつつ、期間全体スコア（電力合計＋快適性ペナルティ）を最小化。
-    シンプルなビームサーチ（貪欲拡張＋幅優先N件保持）で探索量を制御。
+    簡略化された期間最適化システム
+    - 営業時間内のみ最適化を実行（start_time-end_time）
+    - 営業時間外は自動的にOFFモードに設定
+    - 営業時間内では快適温度範囲内の組み合わせをフィルタ
+    - その中から電力消費量が最小の組み合わせを選択
+    - 快適範囲外の場合は最も涼しい（快適範囲に近い）組み合わせを選択
 
     戻り値: (ゾーン名, スケジュール辞書)
     """
@@ -40,14 +86,15 @@ def optimize_zone_period(
     # Initialize feature builder
     feature_builder = OptimizationFeatureBuilder()
 
-    # パラメータ
-    beam_width = 5  # 時刻ごとに保持する候補数（高速化のため削減）
-
     # ゾーン設定の取得
-    start_h = int(str(zone_data.get("start_time", "07:00")).split(":")[0])
-    end_h = int(str(zone_data.get("end_time", "20:00")).split(":")[0])
-    comfort_min = float(zone_data.get("comfort_min", 22))
-    comfort_max = float(zone_data.get("comfort_max", 24))
+    start_time_str = str(zone_data.get("start_time", "07:00"))
+    end_time_str = str(zone_data.get("end_time", "20:00"))
+    start_h = int(start_time_str.split(":")[0])
+    start_m = int(start_time_str.split(":")[1]) if ":" in start_time_str else 0
+    end_h = int(end_time_str.split(":")[0])
+    end_m = int(end_time_str.split(":")[1]) if ":" in end_time_str else 0
+    comfort_min = float(zone_data.get("comfort_min", 22.0))
+    comfort_max = float(zone_data.get("comfort_max", 25.0))
 
     # 室内機数の計算
     unit_count = 0
@@ -58,7 +105,13 @@ def optimize_zone_period(
     # 候補の生成
     sp_min = int(zone_data.get("setpoint_min", 22))
     sp_max = int(zone_data.get("setpoint_max", 28))
-    sp_list = list(range(sp_min, sp_max + 1))
+    # Generate temperature candidates with 0.5-degree steps
+    sp_list = []
+    temp = sp_min
+    while temp <= sp_max:
+        sp_list.append(temp)
+        temp += 0.5
+
     mode_candidates = zone_data.get("mode_candidates")
     if mode_candidates is not None and not isinstance(
         mode_candidates, (list, tuple, set)
@@ -78,7 +131,8 @@ def optimize_zone_period(
     )
 
     print(
-        f"[PeriodOptimizer] Zone {zone_name}: Beam search with width={beam_width}, "
+        f"[PeriodOptimizer] Zone {zone_name}: Business hours {start_time_str}-{end_time_str}, "
+        f"Comfort range {comfort_min}-{comfort_max}°C, "
         f"candidates={len(sp_list)}×{len(mode_list)}×{len(fan_list)}"
     )
 
@@ -99,58 +153,79 @@ def optimize_zone_period(
             "solar_radiation": row.get("Solar Radiation", 0),
         }
 
-    # 初期ビーム（直前温度=目標温度、累積スコア=0）
+    # 初期温度
     initial_temp = float(zone_data.get("target_room_temp", 25.0))
-    BeamState = dict  # 型エイリアス
-    beam: List[BeamState] = [
-        {
-            "last_temp": initial_temp,
-            "total_power": 0.0,
-            "comfort_penalty": 0.0,
-            "schedule": {},
-        }
-    ]
+    last_temp = initial_temp
+    last_set_temp = None  # Track previous hour's set temperature for constraint
+    last_mode = None  # Track previous hour's mode for mode transition constraints
 
-    # 時間特徴の事前計算
-    time_features = {
-        ts: {
-            "DayOfWeek": int(ts.dayofweek),
-            "Hour": int(ts.hour),
-            "Month": int(ts.month),
-            "IsWeekend": 1 if int(ts.dayofweek) in (5, 6) else 0,
-            "IsHoliday": 0,  # 期間最適化中は休日情報未連携のため0で初期化
-        }
-        for ts in date_range
-    }
+    # スケジュール辞書
+    schedule = {}
+    total_power = 0.0
+    comfort_violations = 0
+    temp_change_violations = (
+        0  # Track how many times temp change constraint is violated
+    )
+    mode_transition_violations = 0  # Track mode transition constraint violations
 
-    # 時系列に沿って拡張
+    # 各時刻で最適化
     for timestamp in date_range:
-        is_biz = start_h <= timestamp.hour <= end_h
+        # Check if current time is within business hours
+        current_hour = timestamp.hour
+        current_minute = timestamp.minute
+        current_time_minutes = current_hour * 60 + current_minute
+        start_time_minutes = start_h * 60 + start_m
+        end_time_minutes = end_h * 60 + end_m
 
-        expanded: List[BeamState] = []
-        for state in beam:
-            last_temp = float(state["last_temp"])
-            total_power = float(state["total_power"])
-            comfort_penalty = float(state["comfort_penalty"])
-            schedule = state["schedule"]
+        is_biz = start_time_minutes <= current_time_minutes <= end_time_minutes
 
-            weather = weather_dict.get(
-                timestamp,
-                {
-                    "outdoor_temp": 25.0,
-                    "outdoor_humidity": 60.0,
-                    "solar_radiation": 0,
-                },
-            )
+        weather = weather_dict.get(
+            timestamp,
+            {
+                "outdoor_temp": 25.0,
+                "outdoor_humidity": 60.0,
+                "solar_radiation": 0,
+            },
+        )
+
+        if not is_biz:
+            # Non-business hours: Set mode to OFF with consistent 22°C set temperature
+            best_combination = {
+                "set_temp": 22.0,  # Consistent set temperature for all areas during non-business hours
+                "mode": "OFF",
+                "fan": "LOW",  # Default fan speed for OFF mode
+                "pred_temp": last_temp,  # Temperature remains the same when OFF
+                "pred_power": 0.0,  # No power consumption when OFF
+                "outside_temp": weather["outdoor_temp"],
+            }
+        else:
+            # Business hours: Run full optimization
+            # 全ての組み合わせを評価
+            all_combinations = []
+            valid_combinations = []
+
+            # Apply mode transition constraints
+            allowed_modes = filter_allowed_modes(last_mode, mode_list)
+
+            # Count violations if modes were filtered
+            if len(allowed_modes) < len(mode_list) and last_mode is not None:
+                # This is informational - we're applying the constraint, not violating it
+                pass
 
             for sp in sp_list:
-                for md in mode_list:
+                # Apply temperature change constraint: max ±1°C change from previous hour
+                if last_set_temp is not None:
+                    temp_change = abs(sp - last_set_temp)
+                    if temp_change > 1.0:
+                        continue  # Skip this temperature if change exceeds 1°C
+
+                for md in allowed_modes:
                     for fs in fan_list:
                         # 特徴量の作成
                         base_features = {
                             "A/C Set Temperature": sp,
                             "Indoor Temp. Lag1": last_temp,
-                            "A/C ON/OFF": 1 if is_biz else 0,
+                            "A/C ON/OFF": 1,  # Always 1 during business hours
                             "A/C Mode": md,
                             "A/C Fan Speed": fs,
                             "Outdoor Temp.": weather["outdoor_temp"],
@@ -163,15 +238,12 @@ def optimize_zone_period(
                             base_features=base_features,
                             timestamp=timestamp,
                             zone_name=zone_name,
-                            weather_history=None,  # Could be enhanced with actual history
-                            power_history=None,  # Could be enhanced with actual history
+                            weather_history=None,
+                            power_history=None,
                         )
 
                         # Select only the features the model expects
                         features = features_df[models.feature_cols]
-
-                        # 電力予測の条件を学習時と統一（ON/OFF状態に基づく）
-                        power_prediction_onoff = 1 if is_biz else 0
 
                         # 予測（マルチアウトプットモデルが利用可能な場合は使用）
                         if models.multi_output_model is not None:
@@ -180,66 +252,168 @@ def optimize_zone_period(
                             power_pred = float(multi_pred[0][1]) * unit_count
                         else:
                             temp_pred = float(models.temp_model.predict(features)[0])
-                            # 電力予測：ON/OFF状態に基づいて調整
+                            # 電力予測：ビジネス時間中は通常の予測
                             base_power_pred = float(
                                 models.power_model.predict(features)[0]
                             )
-                            # OFF状態の場合は電力予測を0に近づける
-                            if power_prediction_onoff == 0:
-                                power_pred = base_power_pred * 0.1  # OFF時は10%に減衰
-                            else:
-                                power_pred = base_power_pred * unit_count
+                            power_pred = base_power_pred * unit_count
 
-                        # ペナルティ更新（執務時間内のみ）
-                        new_penalty = comfort_penalty
-                        if is_biz:
-                            if temp_pred < comfort_min:
-                                new_penalty += (comfort_min - temp_pred) * 100
-                            elif temp_pred > comfort_max:
-                                new_penalty += (temp_pred - comfort_max) * 100
+                        # # Handle negative power predictions (model issue, not data issue)
+                        # if power_pred < 0:
+                        #     # For ON modes, use a minimum reasonable power consumption
+                        #     if md != "OFF" and md != 0:
+                        #         # Use 10% of unit count as minimum power (reasonable for AC units)
+                        #         power_pred = max(0.1 * unit_count, 0.5)
+                        #         print(
+                        #             f"[PeriodOptimizer] Warning: Negative power prediction for {zone_name} at {timestamp}, mode {md}. Set to {power_pred:.2f} kWh"
+                        #         )
+                        #     else:
+                        #         # For OFF mode, power should be 0
+                        #         power_pred = 0.0
 
-                        # 新状態の作成
-                        new_schedule = dict(schedule)
-                        new_schedule[timestamp] = {
+                        combination = {
                             "set_temp": sp,
                             "mode": md,
                             "fan": fs,
                             "pred_temp": temp_pred,
                             "pred_power": power_pred,
+                            "outside_temp": weather["outdoor_temp"],
                         }
 
-                        new_state = {
-                            "last_temp": temp_pred,
-                            "total_power": total_power + power_pred,
-                            "comfort_penalty": new_penalty,
-                            "schedule": new_schedule,
-                        }
+                        all_combinations.append(combination)
 
-                        expanded.append(new_state)
+                        # 快適範囲内の組み合わせをフィルタ
+                        if comfort_min <= temp_pred <= comfort_max:
+                            valid_combinations.append(combination)
 
-        # ビーム幅で剪定（現在までの累積スコアで評価）
-        expanded.sort(
-            key=lambda s: comfort_w * s["comfort_penalty"] + power_w * s["total_power"]
-        )
-        beam = expanded[:beam_width]
+            # 最適な組み合わせを選択
+            if valid_combinations:
+                # 快適範囲内で電力消費量が最小の組み合わせ
+                best_combination = min(
+                    valid_combinations, key=lambda x: x["pred_power"]
+                )
+            else:
+                # 快適範囲外の場合は最も涼しい（快適範囲に近い）組み合わせ
+                # 夏場は涼しい方を優先（comfort_minに近い方）
+                if all_combinations:
+                    best_combination = min(
+                        all_combinations,
+                        key=lambda x: abs(x["pred_temp"] - comfort_min),
+                    )
+                else:
+                    # No valid combinations due to temperature change constraint
+                    # Relax constraint and pick closest valid temperature
+                    temp_change_violations += 1
+                    # Find the closest temperature to last_set_temp within ±1°C
+                    if last_set_temp is not None:
+                        closest_temp = max(sp_min, min(sp_max, last_set_temp))
+                    else:
+                        closest_temp = sp_min
 
-    # 最良解の選択
-    best_state = min(
-        beam,
-        key=lambda s: comfort_w * s["comfort_penalty"] + power_w * s["total_power"],
-    )
+                    # Re-evaluate with the closest temperature (still respecting mode constraints)
+                    for md in allowed_modes:
+                        for fs in fan_list:
+                            base_features = {
+                                "A/C Set Temperature": closest_temp,
+                                "Indoor Temp. Lag1": last_temp,
+                                "A/C ON/OFF": 1,  # Always 1 during business hours
+                                "A/C Mode": md,
+                                "A/C Fan Speed": fs,
+                                "Outdoor Temp.": weather["outdoor_temp"],
+                                "Outdoor Humidity": weather["outdoor_humidity"],
+                                "Solar Radiation": weather["solar_radiation"],
+                            }
+                            features_df = feature_builder.build_features(
+                                base_features=base_features,
+                                timestamp=timestamp,
+                                zone_name=zone_name,
+                                weather_history=None,
+                                power_history=None,
+                            )
+                            features = features_df[models.feature_cols]
 
-    best_score = (
-        comfort_w * best_state["comfort_penalty"] + power_w * best_state["total_power"]
+                            if models.multi_output_model is not None:
+                                multi_pred = models.multi_output_model.predict(features)
+                                temp_pred = float(multi_pred[0][0])
+                                power_pred = float(multi_pred[0][1]) * unit_count
+                            else:
+                                temp_pred = float(
+                                    models.temp_model.predict(features)[0]
+                                )
+                                base_power_pred = float(
+                                    models.power_model.predict(features)[0]
+                                )
+                                power_pred = base_power_pred * unit_count
+
+                            # # Handle negative power predictions (model issue, not data issue)
+                            # if power_pred < 0:
+                            #     # For ON modes, use a minimum reasonable power consumption
+                            #     if md != "OFF" and md != 0:
+                            #         # Use 10% of unit count as minimum power (reasonable for AC units)
+                            #         power_pred = max(0.1 * unit_count, 0.5)
+                            #         print(
+                            #             f"[PeriodOptimizer] Warning: Negative power prediction for {zone_name} at {timestamp}, mode {md}. Set to {power_pred:.2f} kWh"
+                            #         )
+                            #     else:
+                            #         # For OFF mode, power should be 0
+                            #         power_pred = 0.0
+
+                            all_combinations.append(
+                                {
+                                    "set_temp": closest_temp,
+                                    "mode": md,
+                                    "fan": fs,
+                                    "pred_temp": temp_pred,
+                                    "pred_power": power_pred,
+                                    "outside_temp": weather["outdoor_temp"],
+                                }
+                            )
+
+                    best_combination = min(
+                        all_combinations,
+                        key=lambda x: abs(x["pred_temp"] - comfort_min),
+                    )
+                comfort_violations += 1
+
+        # スケジュールに追加
+        schedule[timestamp] = best_combination
+        last_temp = best_combination["pred_temp"]
+        last_set_temp = best_combination[
+            "set_temp"
+        ]  # Track set temperature for next hour
+        last_mode = best_combination[
+            "mode"
+        ]  # Track mode for next hour's transition constraints
+        total_power += best_combination["pred_power"]
+
+    # 結果の表示
+    business_hours_count = sum(
+        1
+        for ts in date_range
+        if start_time_minutes <= (ts.hour * 60 + ts.minute) <= end_time_minutes
     )
     print(
-        f"[PeriodOptimizer] Zone {zone_name} completed - Best score: {best_score:.1f}"
+        f"[PeriodOptimizer] Zone {zone_name} completed - "
+        f"Business hours: {business_hours_count}/{len(date_range)} hours, "
+        f"Total power: {total_power:.1f} kWh, "
+        f"Comfort violations: {comfort_violations}/{business_hours_count} business hours, "
+        f"Temp change violations: {temp_change_violations}/{business_hours_count} business hours, "
+        f"Mode transition constraints: Applied"
     )
-    return zone_name, best_state["schedule"]
+
+    return zone_name, schedule
 
 
 class PeriodOptimizer:
-    """期間最適化クラス"""
+    """期間最適化クラス（簡略化版）
+
+    営業時間ベースの最適化：
+    1. 営業時間内のみ最適化を実行（master dataのstart_time-end_time）
+    2. 営業時間外は自動的にOFFモードに設定
+    3. 営業時間内では快適温度範囲内の組み合わせをフィルタ
+    4. その中から電力消費量が最小の組み合わせを選択
+    5. 快適範囲外の場合は最も涼しい組み合わせを選択
+    """
 
     def __init__(
         self, master: dict, models: Dict[str, EnvPowerModels], max_workers: int = None
@@ -252,25 +426,13 @@ class PeriodOptimizer:
         self,
         date_range: pd.DatetimeIndex,
         weather_df: pd.DataFrame,
-        preference: str = "balanced",
     ) -> Dict[str, Dict[pd.Timestamp, dict]]:
         """期間最適化を実行"""
         print(
             f"[PeriodOptimizer] Starting period optimization for {len(date_range)} hours"
         )
         print(f"[PeriodOptimizer] Date range: {date_range[0]} to {date_range[-1]}")
-        print(f"[PeriodOptimizer] Preference: {preference}")
         print(f"[PeriodOptimizer] Max workers: {self.max_workers}")
-
-        # 重みの設定
-        if preference == "comfort":
-            comfort_w, power_w = 0.7, 0.3
-        elif preference == "energy":
-            comfort_w, power_w = 0.2, 0.8
-        else:
-            comfort_w, power_w = 0.5, 0.5
-
-        print(f"[PeriodOptimizer] Weights - Comfort: {comfort_w}, Power: {power_w}")
         print(f"[PeriodOptimizer] Available zones: {list(self.models.keys())}")
 
         # 並列処理の準備
@@ -284,8 +446,6 @@ class PeriodOptimizer:
                     models,
                     date_range,
                     weather_df,
-                    comfort_w,
-                    power_w,
                 )
             )
 
@@ -294,7 +454,7 @@ class PeriodOptimizer:
         start_time = time.perf_counter()
 
         with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
-            # タスクの投入
+            # タスクの投入（簡略化版を使用）
             future_to_zone = {
                 executor.submit(optimize_zone_period, *task): task[0]
                 for task in zone_tasks

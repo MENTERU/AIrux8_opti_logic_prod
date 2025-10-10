@@ -71,13 +71,13 @@ class ModelBuilder:
                 # Direct model object (e.g., XGBRegressor)
                 model = pipeline
                 data_for_model = X
-            
+
             # サンプリング（重すぎ防止）
             Xs = X.sample(min(len(X), 2000), random_state=42) if len(X) > 0 else X
             if Xs is None or Xs.empty:
                 print(f"[ModelBuilder] Empty or None data for SHAP")
                 return
-            
+
             # Use sampled data for model input
             if isinstance(pipeline, Pipeline) and scaler is not None:
                 try:
@@ -86,8 +86,10 @@ class ModelBuilder:
                     data_for_model = Xs
             else:
                 data_for_model = Xs
-            
-            print(f"[ModelBuilder] Generating SHAP plot for {title} with {len(Xs)} samples")
+
+            print(
+                f"[ModelBuilder] Generating SHAP plot for {title} with {len(Xs)} samples"
+            )
             explainer = shap.TreeExplainer(model)
             shap_values = explainer.shap_values(data_for_model)
             plt.figure(figsize=(10, 6))
@@ -100,12 +102,13 @@ class ModelBuilder:
             )
             plt.title(title)
             plt.tight_layout()
-            plt.savefig(out_png, dpi=150, bbox_inches='tight')
+            plt.savefig(out_png, dpi=150, bbox_inches="tight")
             plt.close()
             print(f"[ModelBuilder] SHAP plot saved to: {out_png}")
         except Exception as e:
             print(f"[ModelBuilder] SHAP plot failed: {e}")
             import traceback
+
             traceback.print_exc()
 
     @staticmethod
@@ -117,18 +120,18 @@ class ModelBuilder:
         combined = combined.dropna()
         X_clean = combined[feature_cols].astype(float)
         y_clean = combined[target].astype(float)
-        
+
         # Preserve the original datetime index
-        if hasattr(df.index, 'dtype') and 'datetime' in str(df.index.dtype):
+        if hasattr(df.index, "dtype") and "datetime" in str(df.index.dtype):
             # Use the index from the cleaned combined dataframe
             X_clean.index = combined.index
             y_clean.index = combined.index
-        elif 'Datetime' in df.columns:
+        elif "Datetime" in df.columns:
             # If Datetime is a column, use it as index
-            datetime_values = df.loc[combined.index, 'Datetime']
+            datetime_values = df.loc[combined.index, "Datetime"]
             X_clean.index = pd.to_datetime(datetime_values)
             y_clean.index = pd.to_datetime(datetime_values)
-        
+
         return X_clean, y_clean
 
     @staticmethod
@@ -140,18 +143,18 @@ class ModelBuilder:
         combined = combined.dropna()
         X_clean = combined[feature_cols].astype(float)
         Y_clean = combined[targets].astype(float)
-        
+
         # Preserve the original datetime index
-        if hasattr(df.index, 'dtype') and 'datetime' in str(df.index.dtype):
+        if hasattr(df.index, "dtype") and "datetime" in str(df.index.dtype):
             # Use the index from the cleaned combined dataframe
             X_clean.index = combined.index
             Y_clean.index = combined.index
-        elif 'Datetime' in df.columns:
+        elif "Datetime" in df.columns:
             # If Datetime is a column, use it as index
-            datetime_values = df.loc[combined.index, 'Datetime']
+            datetime_values = df.loc[combined.index, "Datetime"]
             X_clean.index = pd.to_datetime(datetime_values)
             Y_clean.index = pd.to_datetime(datetime_values)
-        
+
         return X_clean, Y_clean
 
     @staticmethod
@@ -234,9 +237,11 @@ class ModelBuilder:
             Xtr, Xte, ytr, yte = train_test_split(
                 X_t, y_t, test_size=0.2, random_state=42, shuffle=False
             )
-            
+
             # Print train/test date ranges
-            print(f"[ModelBuilder] Zone {z} - Train: {pd.to_datetime(Xtr.index.min())} to {pd.to_datetime(Xtr.index.max())} | Test: {pd.to_datetime(Xte.index.min())} to {pd.to_datetime(Xte.index.max())}")
+            print(
+                f"[ModelBuilder] Zone {z} - Train: {pd.to_datetime(Xtr.index.min())} to {pd.to_datetime(Xtr.index.max())} | Test: {pd.to_datetime(Xte.index.min())} to {pd.to_datetime(Xte.index.max())}"
+            )
             temp_model = Pipeline(
                 steps=[
                     ("scaler", MinMaxScaler()),
@@ -262,9 +267,11 @@ class ModelBuilder:
                 Xtrh, Xteh, ytrh, yteh = train_test_split(
                     X_h, y_h, test_size=0.2, random_state=42, shuffle=False
                 )
-                
+
                 # Print humidity train/test date ranges
-                print(f"[ModelBuilder] Zone {z} - Humidity Train: {pd.to_datetime(Xtrh.index.min())} to {pd.to_datetime(Xtrh.index.max())} | Test: {pd.to_datetime(Xteh.index.min())} to {pd.to_datetime(Xteh.index.max())}") 
+                print(
+                    f"[ModelBuilder] Zone {z} - Humidity Train: {pd.to_datetime(Xtrh.index.min())} to {pd.to_datetime(Xtrh.index.max())} | Test: {pd.to_datetime(Xteh.index.min())} to {pd.to_datetime(Xteh.index.max())}"
+                )
                 hum_model = Pipeline(
                     steps=[
                         ("scaler", MinMaxScaler()),
@@ -358,16 +365,23 @@ class ModelBuilder:
                     sample_weight_series = None
             if sample_weight_series is not None:
                 Xtrp, Xtep, ytrp, ytep, wtrp, wtep = train_test_split(
-                    X_p, y_p, sample_weight_series, test_size=0.2, random_state=42, shuffle=False
+                    X_p,
+                    y_p,
+                    sample_weight_series,
+                    test_size=0.2,
+                    random_state=42,
+                    shuffle=False,
                 )
             else:
                 Xtrp, Xtep, ytrp, ytep = train_test_split(
                     X_p, y_p, test_size=0.2, random_state=42, shuffle=False
                 )
                 wtrp = None
-            
+
             # Print power train/test date ranges
-            print(f"[ModelBuilder] Zone {z} - Power Train: {pd.to_datetime(Xtrp.index.min())} to {pd.to_datetime(Xtrp.index.max())} | Test: {pd.to_datetime(Xtep.index.min())} to {pd.to_datetime(Xtep.index.max())}")
+            print(
+                f"[ModelBuilder] Zone {z} - Power Train: {pd.to_datetime(Xtrp.index.min())} to {pd.to_datetime(Xtrp.index.max())} | Test: {pd.to_datetime(Xtep.index.min())} to {pd.to_datetime(Xtep.index.max())}"
+            )
             # Remove MinMaxScaler - it's causing constant predictions
             power_model = XGBRegressor(
                 n_estimators=600,
@@ -403,9 +417,11 @@ class ModelBuilder:
                         Xm_tr, Xm_te, Ym_tr, Ym_te = train_test_split(
                             Xm, Ym, test_size=0.2, random_state=42, shuffle=False
                         )
-                        
+
                         # Print multi-output train/test date ranges
-                        print(f"[ModelBuilder] Zone {z} - Multi-output Train: {pd.to_datetime(Xm_tr.index.min())} to {pd.to_datetime(Xm_tr.index.max())} | Test: {pd.to_datetime(Xm_te.index.min())} to {pd.to_datetime(Xm_te.index.max())}")
+                        print(
+                            f"[ModelBuilder] Zone {z} - Multi-output Train: {pd.to_datetime(Xm_tr.index.min())} to {pd.to_datetime(Xm_tr.index.max())} | Test: {pd.to_datetime(Xm_te.index.min())} to {pd.to_datetime(Xm_te.index.max())}"
+                        )
                         # Remove MinMaxScaler - XGBoost handles features internally
                         base_xgb = XGBRegressor(
                             n_estimators=500,
@@ -640,3 +656,58 @@ class ModelBuilder:
 
         print(f"[ModelBuilder] Validation results saved for {len(zones)} zones")
 
+    def load_models(self) -> Dict[str, EnvPowerModels]:
+        """
+        Load pre-trained models from disk
+
+        Returns:
+            Dict[str, EnvPowerModels]: Dictionary of zone names to model objects
+        """
+        from config.utils import get_data_path
+
+        models = {}
+        mdir = os.path.join(get_data_path("models_path"), self.store_name)
+
+        if not os.path.exists(mdir):
+            print(f"[ModelBuilder] Models directory not found: {mdir}")
+            return models
+
+        # Find all model files
+        model_files = [
+            f
+            for f in os.listdir(mdir)
+            if f.startswith("models_") and f.endswith(".pkl")
+        ]
+
+        if not model_files:
+            print(f"[ModelBuilder] No model files found in: {mdir}")
+            return models
+
+        print(f"[ModelBuilder] Found {len(model_files)} model files")
+
+        for model_file in model_files:
+            try:
+                # Extract zone name from filename (models_ZoneName.pkl -> ZoneName)
+                zone_name = model_file.replace("models_", "").replace(".pkl", "")
+
+                # Load the model
+                model_path = os.path.join(mdir, model_file)
+                model_data = joblib.load(model_path)
+
+                # Create EnvPowerModels object
+                models[zone_name] = EnvPowerModels(
+                    temp_model=model_data.get("temp_model"),
+                    hum_model=model_data.get("hum_model"),
+                    power_model=model_data.get("power_model"),
+                    multi_output_model=model_data.get("multi_output_model"),
+                    feature_cols=model_data.get("feature_cols", []),
+                )
+
+                print(f"[ModelBuilder] Loaded model for zone: {zone_name}")
+
+            except Exception as e:
+                print(f"[ModelBuilder] Error loading model {model_file}: {e}")
+                continue
+
+        print(f"[ModelBuilder] Successfully loaded {len(models)} models")
+        return models
