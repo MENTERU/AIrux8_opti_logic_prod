@@ -19,7 +19,6 @@ from processing.utilities.category_mapping_loader import (
     get_normalized_category_mapping,
 )
 
-
 MODE_LABEL_TO_CODE = get_category_mapping("A/C Mode")
 MODE_CODE_TO_LABEL = get_inverse_category_mapping("A/C Mode")
 MODE_NORMALIZED_LABEL_TO_CODE = get_normalized_category_mapping("A/C Mode")
@@ -48,7 +47,9 @@ def _to_mode_code(value) -> int:
         normalized = str(value).strip().upper()
         return MODE_NORMALIZED_LABEL_TO_CODE.get(normalized, FALLBACK_MODE_CODE)
     else:
-        return numeric_value if numeric_value in MODE_CODE_TO_LABEL else FALLBACK_MODE_CODE
+        return (
+            numeric_value if numeric_value in MODE_CODE_TO_LABEL else FALLBACK_MODE_CODE
+        )
 
 
 def _to_fan_code(value) -> int:
@@ -60,7 +61,9 @@ def _to_fan_code(value) -> int:
         normalized = str(value).strip().upper()
         return FAN_NORMALIZED_LABEL_TO_CODE.get(normalized, FALLBACK_FAN_CODE)
     else:
-        return numeric_value if numeric_value in FAN_CODE_TO_LABEL else FALLBACK_FAN_CODE
+        return (
+            numeric_value if numeric_value in FAN_CODE_TO_LABEL else FALLBACK_FAN_CODE
+        )
 
 
 def _load_actual(store_name: str) -> Optional[pd.DataFrame]:
@@ -105,12 +108,43 @@ def _load_plan(store_name: str) -> Optional[pd.DataFrame]:
 
 def _load_weather_forecast(store_name: str) -> Optional[pd.DataFrame]:
     """天気予報データを読み込み"""
-    # 保存先は PlanningData に統一
-    path = f"data/04_PlanningData/{store_name}/weather_forecast.csv"
-    if not os.path.exists(path):
-        print(f"❌ 天気予報データが見つかりません: {path}")
-        return None
-    df = pd.read_csv(path)
+    import glob
+    from pathlib import Path
+
+    # Use the same date logic as aircon_optimizer.py
+    today = pd.Timestamp.today().normalize()
+    start_date = today.strftime("%Y-%m-%d")
+    end_date = (today + pd.Timedelta(days=3)).strftime("%Y-%m-%d")
+
+    # Convert to filename format (YYYYMMDD)
+    start_date_str = start_date.replace("-", "")
+    end_date_str = end_date.replace("-", "")
+
+    # Look for the specific weather forecast file
+    planning_dir = f"data/04_PlanningData/{store_name}"
+    filename = f"weather_forecast_{start_date_str}_{end_date_str}.csv"
+    filepath = f"{planning_dir}/{filename}"
+
+    if not os.path.exists(filepath):
+        print(f"❌ 天気予報データが見つかりません: {filepath}")
+        print(f"   期待されるファイル名: {filename}")
+
+        # Fallback: look for any weather forecast file
+        pattern = f"{planning_dir}/weather_forecast_*.csv"
+        weather_files = glob.glob(pattern)
+
+        if weather_files:
+            # Get the most recent file (by modification time)
+            latest_file = max(weather_files, key=lambda x: Path(x).stat().st_mtime)
+            print(f"📊 フォールバック: 最新の天気予報ファイルを使用: {latest_file}")
+            filepath = latest_file
+        else:
+            print(f"❌ 天気予報ファイルが全く見つかりません: {pattern}")
+            return None
+    else:
+        print(f"📊 Loading weather forecast: {filepath}")
+
+    df = pd.read_csv(filepath)
     if "datetime" not in df.columns:
         print("❌ 天気予報データに datetime 列がありません")
         return None
@@ -436,11 +470,9 @@ def create_plan_validation_dashboard(
             )
         if cols["mode"] in sub_p.columns:
             # 計画のモードも文字列に変換
-            plan_mode_numeric = (
-                sub_p[cols["mode"]].map(_to_mode_code).astype(int)
-            )
-            plan_mode_labels = (
-                plan_mode_numeric.map(MODE_CODE_TO_LABEL).fillna("UNKNOWN")
+            plan_mode_numeric = sub_p[cols["mode"]].map(_to_mode_code).astype(int)
+            plan_mode_labels = plan_mode_numeric.map(MODE_CODE_TO_LABEL).fillna(
+                "UNKNOWN"
             )
 
             fig.add_trace(
@@ -475,12 +507,8 @@ def create_plan_validation_dashboard(
             )
         if cols["fan"] in sub_p.columns:
             # 計画のファン速度も数値に変換
-            plan_fan_numeric = (
-                sub_p[cols["fan"]].map(_to_fan_code).astype(int)
-            )
-            plan_fan_labels = (
-                plan_fan_numeric.map(FAN_CODE_TO_LABEL).fillna("UNKNOWN")
-            )
+            plan_fan_numeric = sub_p[cols["fan"]].map(_to_fan_code).astype(int)
+            plan_fan_labels = plan_fan_numeric.map(FAN_CODE_TO_LABEL).fillna("UNKNOWN")
 
             fig.add_trace(
                 go.Scatter(

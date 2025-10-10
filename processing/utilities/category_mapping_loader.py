@@ -1,5 +1,3 @@
-"""Utilities for loading and applying category mappings defined in `category_mapping.json`."""
-
 from __future__ import annotations
 
 import json
@@ -33,7 +31,7 @@ def _normalize_key(value: Any) -> str:
 @lru_cache(maxsize=None)
 def load_category_mappings() -> Dict[str, Dict[str, int]]:
     """Load category mappings from `category_mapping.json` once and cache the result."""
-    mapping_path = Path(__file__).resolve().parents[2] / "category_mapping.json"
+    mapping_path = Path(__file__).resolve().parents[2] / "config/category_mapping.json"
     with open(mapping_path, "r", encoding="utf-8") as fp:
         raw_mapping: Dict[str, Dict[str, int]] = json.load(fp)
     return raw_mapping

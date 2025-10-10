@@ -390,7 +390,13 @@ class DataPreprocessor:
         weather_data: Optional[pd.DataFrame],
     ):
         if ac_control_data is not None:
-            ac_control_data.to_csv(
+            # Sort by Datetime column in descending order (latest first)
+            if "Datetime" in ac_control_data.columns:
+                ac_sorted = ac_control_data.sort_values("Datetime", ascending=False)
+            else:
+                print(f"⚠️ No 'Datetime' column found in AC control data. Available columns: {list(ac_control_data.columns)}")
+                ac_sorted = ac_control_data
+            ac_sorted.to_csv(
                 os.path.join(
                     self.output_dir, f"ac_control_processed_{self.store_name}.csv"
                 ),
@@ -398,7 +404,13 @@ class DataPreprocessor:
                 encoding="utf-8-sig",
             )
         if power_meter_data is not None:
-            power_meter_data.to_csv(
+            # Sort by Datetime column in descending order (latest first)
+            if "Datetime" in power_meter_data.columns:
+                pm_sorted = power_meter_data.sort_values("Datetime", ascending=False)
+            else:
+                print(f"⚠️ No 'Datetime' column found in power meter data. Available columns: {list(power_meter_data.columns)}")
+                pm_sorted = power_meter_data
+            pm_sorted.to_csv(
                 os.path.join(
                     self.output_dir, f"power_meter_processed_{self.store_name}.csv"
                 ),
@@ -406,7 +418,22 @@ class DataPreprocessor:
                 encoding="utf-8-sig",
             )
         if weather_data is not None:
-            weather_data.to_csv(
+            # Find the datetime column (could be "Datetime" or "datetime")
+            datetime_col = None
+            for col in ["Datetime", "datetime"]:
+                if col in weather_data.columns:
+                    datetime_col = col
+                    break
+            
+            if datetime_col:
+                # Sort by datetime column in descending order (latest first)
+                weather_sorted = weather_data.sort_values(datetime_col, ascending=False)
+            else:
+                # If no datetime column found, use original data
+                print(f"⚠️ No datetime column found in weather data. Available columns: {list(weather_data.columns)}")
+                weather_sorted = weather_data
+            
+            weather_sorted.to_csv(
                 os.path.join(
                     self.output_dir, f"weather_processed_{self.store_name}.csv"
                 ),
