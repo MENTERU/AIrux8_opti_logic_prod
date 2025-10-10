@@ -2,7 +2,7 @@
 
 ## 概要
 
-エアコンの設定温度とモードを最適化し、電力消費を最小化するシステムです。営業時間内の室温制約を考慮した 48 時間スケジュールを生成します。
+エアコンの設定温度とモードを最適化し、電力消費を最小化するシステムです。営業時間内の室温制約を考慮した期間最適化スケジュールを生成します。
 
 ## セットアップ
 
@@ -36,20 +36,20 @@ WEATHER_API_KEY = "weather_api_key_here"
 
 ```
 AIrux8_opti_logic/
-├── aircon_optimizer.py
 ├── run_optimization.py
 ├── config/
 ├── processing/
-├── machine_learning/
+├── training/
 ├── optimization/
 ├── planning/
-├── service/
+├── visualization/
 └── data/                    # ← このフォルダをダウンロードして配置
     ├── 00_InputData/        # 生データ
     ├── 01_MasterData/       # マスターデータ
     ├── 02_PreprocessedData/ # 前処理済みデータ（自動生成）
     ├── 03_Models/           # 学習済みモデル（自動生成）
-    └── 04_PlanningData/     # 計画データ（自動生成）
+    ├── 04_PlanningData/     # 計画データ（自動生成）
+    └── 05_ValidationResults/# 検証結果（自動生成）
 ```
 
 **データフォルダの取得方法:**
@@ -58,126 +58,151 @@ AIrux8_opti_logic/
 2. プロジェクトのルートディレクトリ（`AIrux8_opti_logic/`）に配置
 3. フォルダ構造が上記の通りになっていることを確認
 
-### 4. パス設定の選択
+## 実行方法
 
-システムは以下の 2 つのパス設定をサポートしています：
+### 基本的な実行コマンド
 
-- **ローカルパス** (`local_paths`): プロジェクト内の `data/` フォルダを使用（デフォルト・推奨）
-- **リモートパス** (`remote_paths`): Google Drive の共有フォルダを使用
+```bash
+# フルパイプライン実行（前処理→学習→最適化）
+uv run run_optimization.py
 
-```python
-from config.utils import get_data_path
+# 特定のストアで実行
+uv run run_optimization.py --store Clea
 
-# ローカルパスを使用（デフォルト）
-local_path = get_data_path("raw_data_path")
-
-# リモートパスを使用
-remote_path = get_data_path("raw_data_path", use_remote_paths=True)
+# 特定の期間で実行
+uv run run_optimization.py --start-date 2024-01-01 --end-date 2024-01-02
 ```
 
-### メインファイル
+### 段階別実行フラグ
 
-- `run_optimization.py` - 実行スクリプト
-- `aircon_optimizer_simple.ipynb` - Jupyter Notebook 版
+```bash
+# 前処理のみ実行
+uv run run_optimization.py --preprocess-only
 
-## クラス構成（プロセス別）
+# 集約のみ実行
+uv run run_optimization.py --aggregate-only
+
+# モデル学習のみ実行
+uv run run_optimization.py --train-only
+
+# 最適化のみ実行（事前に学習済みモデルが必要）
+uv run run_optimization.py --optimize-only
+
+# 可視化をスキップ
+uv run run_optimization.py --skip-visualization
+```
+
+## 最適化アルゴリズム
+
+### 期間最適化システム（PeriodOptimizer）
+
+本システムは**期間最適化**を採用し、各時刻で独立して最適化を実行します。
+
+#### 1. 基本方針
+
+- **営業時間内**: 快適温度範囲内で電力消費を最小化
+- **営業時間外**: 自動的にOFFモードに設定
+- **制約条件**: 温度変化制約（±1°C/時）、モード遷移制約を適用
+
+#### 2. 最適化フロー
+
+```
+各時刻に対して:
+├── 営業時間判定
+│   ├── 営業時間外 → OFFモード（22°C設定）
+│   └── 営業時間内 → 最適化実行
+│       ├── 候補生成（温度×モード×ファン速度）
+│       ├── 制約適用
+│       │   ├── 温度変化制約（前時刻±1°C以内）
+│       │   └── モード遷移制約
+│       │       ├── HEAT → OFF/FANのみ
+│       │       └── その他 → OFF/FAN/COOL
+│       ├── 予測実行
+│       │   ├── 室温予測（温度モデル）
+│       │   └── 電力予測（電力モデル）
+│       └── 最適解選択
+│           ├── 快適範囲内 → 電力最小
+│           └── 快適範囲外 → 快適温度に最も近い
+```
+
+#### 3. 制約条件
+
+**温度変化制約:**
+- 前時刻の設定温度から±1°C以内の変更のみ許可
+- 制約違反時は最も近い温度で再計算
+
+**モード遷移制約:**
+- HEATモード → OFF/FANのみ許可
+- その他のモード → OFF/FAN/COOL許可
+- 制約により急激なモード変更を防止
+
+#### 4. 予測モデル
+
+**温度予測:**
+- XGBoost回帰モデル
+- 特徴量: 設定温度、前時刻室温、A/C状態、外気温、湿度、時間特徴量等
+
+**電力予測:**
+- ログ変換XGBoost回帰モデル（非負値保証）
+- 特徴量: 温度特徴量 + 室内温度
+- 予測値は自動的に非負値に変換
+
+#### 5. 最適化戦略
+
+**快適範囲内の場合:**
+- 電力消費量が最小の組み合わせを選択
+- 快適性を保ちながら省エネを実現
+
+**快適範囲外の場合:**
+- 快適温度範囲に最も近い温度を予測する組み合わせを選択
+- 快適性を優先しつつ、可能な限り省エネを考慮
+
+## システム構成
 
 ### 1. データ処理プロセス (`processing/`)
 
 #### DataPreprocessor (`preprocessor.py`)
-
-- `load_raw()` - 生データ読み込み
-- `preprocess_ac()` - AC 制御データ前処理
-- `preprocess_pm()` - 電力メーターデータ前処理
-- `save()` - 前処理済みデータ保存
+- 生データの読み込みと前処理
+- AC制御データ、電力メーターデータの正規化
+- 欠損値処理とデータクリーニング
 
 #### AreaAggregator (`aggregator.py`)
+- 制御エリア単位でのデータ集約
+- 時間特徴量の追加（曜日、時刻、月、週末フラグ等）
+- ラグ特徴量の生成
 
-- `build()` - 制御エリア単位でのデータ集約
-- `_most_frequent()` - 最頻値計算
-
-#### MasterLoader (`utilities/master_loader.py`)
-
-- `load()` - マスターデータ読み込み
-
-#### VisualCrossingWeatherAPIDataFetcher (`utilities/weather_client.py`)
-
-- `fetch()` - 天気データ取得
-
-### 2. 機械学習プロセス (`machine_learning/`)
+### 2. 機械学習プロセス (`training/`)
 
 #### ModelBuilder (`model_builder.py`)
+- 制御エリア別の予測モデル学習
+- 温度予測モデル（XGBoost）
+- 電力予測モデル（ログ変換XGBoost）
+- マルチアウトプットモデル（温度+電力同時予測）
 
-- `train_by_zone()` - 制御エリア別モデル学習
-- `_split_xy()` - 特徴量・目的変数分割
+#### DataProcessor (`data_processor.py`)
+- 特徴量エンジニアリング
+- ラグ特徴量、ローリング特徴量の生成
+- 時間特徴量の追加
 
 ### 3. 最適化プロセス (`optimization/`)
 
-#### Optimizer (`optimizer.py`)
+#### PeriodOptimizer (`period_optimizer.py`)
+- 期間最適化の実行
+- 制約条件の適用
+- 並列処理による高速化
 
-- `optimize_day()` - 1 日分の最適化実行
-- `_eval_score()` - スコア評価
-- `_gen_candidates()` - 候補生成
-
-#### AirconOptimizer (`aircon_optimizer.py`)
-
-- `run()` - フルパイプライン実行
-- `_load_processed()` - 前処理済みデータ読み込み
+#### OptimizationFeatureBuilder (`feature_builder.py`)
+- 最適化時の特徴量構築
+- 履歴データの管理
+- エンジニアリング特徴量の生成
 
 ### 4. 計画・出力プロセス (`planning/`)
 
 #### Planner (`planner.py`)
+- 最適化結果のスケジュール出力
+- 制御区分別・室内機別スケジュール生成
+- CSV形式での出力
 
-- `export()` - スケジュール出力
-- `_mode_text()` - モード名変換
-
-## 使用方法
-
-### 基本的な使用方法
-
-```python
-from optimization.aircon_optimizer import AirconOptimizer
-from config.private_information import WEATHER_API_KEY
-
-# システム初期化
-optimizer = AirconOptimizer(
-    store_name="Clea",
-    enable_preprocessing=True
-)
-
-# フルパイプライン実行
-result = optimizer.run(
-    weather_api_key=WEATHER_API_KEY,
-    coordinates="35.681236%2C139.767125",
-    start_date="2024-01-01",
-    end_date="2024-01-02",
-    freq="1H",
-    preference="balanced"  # "comfort", "energy", "balanced"
-)
-```
-
-### 設定項目
-
-| パラメータ             | 説明                 | デフォルト値             |
-| ---------------------- | -------------------- | ------------------------ |
-| `store_name`           | 対象ストア名         | "Clea"                   |
-| `enable_preprocessing` | 前処理実行フラグ     | True                     |
-| `weather_api_key`      | 天気 API キー        | None                     |
-| `coordinates`          | 座標（緯度%2C 経度） | "35.681236%2C139.767125" |
-| `start_date`           | 開始日               | 今日                     |
-| `end_date`             | 終了日               | 明日                     |
-| `freq`                 | 時間間隔             | "1H"                     |
-| `preference`           | 最適化優先度         | "balanced"               |
-
-### 実行例
-
-```bash
-# Pythonスクリプト実行
-python run_optimization.py
-
-# Jupyter Notebook実行
-jupyter notebook aircon_optimizer_simple.ipynb
-```
 
 ## 出力結果
 
@@ -186,57 +211,32 @@ jupyter notebook aircon_optimizer_simple.ipynb
 - `data/04_PlanningData/{Store}/control_type_schedule_YYYYMMDD.csv` - 制御区分別スケジュール
 - `data/04_PlanningData/{Store}/unit_schedule_YYYYMMDD.csv` - 室内機別スケジュール
 
-### 中間データ
+### 検証結果
 
-- `data/02_PreprocessedData/{Store}/ac_control_processed_{Store}.csv` - 前処理済み AC 制御データ
-- `data/02_PreprocessedData/{Store}/power_meter_processed_{Store}.csv` - 前処理済み電力データ
-- `data/02_PreprocessedData/{Store}/features_processed_{Store}.csv` - 特徴量データ
+- `data/05_ValidationResults/{Store}/valid_results_{Zone}.csv` - 各ゾーンの予測結果
+- 温度予測、電力予測の詳細データ
 
 ### 学習済みモデル
 
 - `data/03_Models/{Store}/models_{Zone}.pkl` - 制御エリア別学習済みモデル
 
-## 特徴
-
-1. **プロセス別設計** - 処理プロセスに応じた階層分離
-2. **オブジェクト指向設計** - 各機能をクラスに分離
-3. **設定項目の明確化** - パラメータを冒頭で設定
-4. **エラーハンドリング** - 適切なエラーメッセージ
-5. **進捗表示** - 処理状況をリアルタイム表示
-6. **柔軟性** - 設定項目の変更が容易
-7. **セキュリティ** - プライベート情報の分離管理
-
-## 注意事項
-
-- **プライベート情報**: `config/private_information.py` を必ず作成してください
-- **データファイル**: `data/00_InputData/` ディレクトリに配置
-- **マスターデータ**: `data/01_MasterData/` ディレクトリに配置
-- **前処理済みデータ**: `data/02_PreprocessedData/` に保存
-- **学習済みモデル**: `data/03_Models/` に保存
-- **計画データ**: `data/04_PlanningData/` に出力
 
 ## トラブルシューティング
 
 ### よくある問題
 
 1. **`private_information.py` が見つからない**
-
    - `config/private_information.py` ファイルを作成してください
    - 必要な変数を設定してください
 
-2. **天気データが取得できない**
+2. **モデルが見つからない**
+   - `--train-only` でモデルを学習してください
+   - `data/03_Models/{Store}/` にモデルファイルが存在するか確認
 
+3. **天気データが取得できない**
    - Visual Crossing Weather API のキーが正しく設定されているか確認
    - インターネット接続を確認
 
-3. **データファイルが見つからない**
-
+4. **データファイルが見つからない**
    - `data/` フォルダがプロジェクトのルートディレクトリに配置されているか確認
    - `data/00_InputData/{Store}/` に必要な CSV ファイルが存在するか確認
-   - ファイル名が正しいか確認（ac-control-_.csv, ac-power-meter-_.csv）
-   - データフォルダの構造が正しいか確認（上記の「ルートディレクトリの構造」を参照）
-
-4. **パス設定の問題**
-
-   - ローカルパスを使用する場合：`data/` フォルダが正しく配置されているか確認
-   - リモートパスを使用する場合：Google Drive の接続とアクセス権限を確認
