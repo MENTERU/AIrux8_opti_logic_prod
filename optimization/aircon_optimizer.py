@@ -33,8 +33,6 @@ from typing import Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from optimization.optimizer import Optimizer
-from optimization.parallel_optimizer import ParallelOptimizer
 from optimization.period_optimizer import PeriodOptimizer
 from planning.planner import Planner
 from processing.aggregator import AreaAggregator
@@ -101,17 +99,23 @@ class AirconOptimizer:
         return os.path.join(self.plan_dir, filename)
 
     def _load_weather_forecast(
-        self, start_date: str, end_date: str
+        self,
+        start_date: str,
+        end_date: str,
+        weather_api_key: Optional[str] = None,
+        coordinates: Optional[str] = None,
     ) -> Optional[pd.DataFrame]:
         """
-        Load weather forecast from cached file if it exists
+        Load weather forecast from cached file if it exists, otherwise fetch from API
 
         Args:
             start_date: Start date in YYYY-MM-DD format
             end_date: End date in YYYY-MM-DD format
+            weather_api_key: Weather API key for fetching data if cache is missing
+            coordinates: Coordinates for weather API
 
         Returns:
-            Weather DataFrame if file exists, None otherwise
+            Weather DataFrame if file exists or can be fetched from API, None otherwise
         """
         forecast_path = self._get_weather_forecast_path(start_date, end_date)
 
@@ -132,7 +136,37 @@ class AirconOptimizer:
                 return None
         else:
             print(f"[Run] No cached weather forecast found: {forecast_path}")
-            return None
+
+            # Try to fetch weather data from API if credentials are provided
+            if weather_api_key and coordinates:
+                print("[Run] APIから天候データを取得...")
+                try:
+                    from processing.utilities.weatherapi_client import (
+                        VisualCrossingWeatherAPIDataFetcher,
+                    )
+
+                    weather_df = VisualCrossingWeatherAPIDataFetcher(
+                        coordinates=coordinates,
+                        start_date=start_date,
+                        end_date=end_date,
+                        unit="metric",
+                        api_key=weather_api_key,
+                    ).fetch()
+                    if weather_df is not None:
+                        self._save_weather_forecast(weather_df, start_date, end_date)
+                        print(
+                            "[Run] 天候データをAPIから取得し、キャッシュに保存しました"
+                        )
+                        return weather_df
+                    else:
+                        print("[Run] APIから天候データを取得できませんでした")
+                        return None
+                except Exception as e:
+                    print(f"[Run] 天候データ取得エラー: {e}")
+                    return None
+            else:
+                print("[Run] 天候データが見つかりません（APIキーまたは座標が未設定）")
+                return None
 
     def _save_weather_forecast(
         self, weather_df: pd.DataFrame, start_date: str, end_date: str
@@ -189,7 +223,6 @@ class AirconOptimizer:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         freq: str = "1H",
-        preference: str = "balanced",
         temperature_std_multiplier: float = 5.0,
         power_std_multiplier: float = 5.0,
     ):
@@ -337,34 +370,14 @@ class AirconOptimizer:
         # ----------------------------
         weather_df = None
 
-        # First, try to load from cached file
-        weather_df = self._load_weather_forecast(start_date, end_date)
+        # Load weather data (from cache or API)
+        weather_df = self._load_weather_forecast(
+            start_date, end_date, weather_api_key, coordinates
+        )
 
-        # If no cached data found, fetch from API
-        if weather_df is None and weather_api_key:
-            print("[Run] No cached weather data found. Fetching from API...")
-            try:
-                weather_df = VisualCrossingWeatherAPIDataFetcher(
-                    coordinates=coordinates,
-                    start_date=start_date,
-                    end_date=end_date,
-                    unit="metric",
-                    api_key=weather_api_key,
-                ).fetch()
-                print(f"[Run] Weather API result: {weather_df is not None}")
-                if weather_df is not None:
-                    print(f"[Run] Weather data shape: {weather_df.shape}")
-                    print(f"[Run] Weather data columns: {list(weather_df.columns)}")
-
-                    # Save the fetched data to cache
-                    self._save_weather_forecast(weather_df, start_date, end_date)
-            except Exception as e:
-                print(f"[Run] Weather API exception: {e}")
-                weather_df = None
-        elif weather_df is not None:
-            print("[Run] Using cached weather data - no API call needed")
-        else:
-            print("[Run] No weather API key provided and no cached data found")
+        # If no weather data found
+        if weather_df is None:
+            print("[Run] 天候データが見つかりません")
 
         # 天候データの統合（履歴 + 未来）
         combined_weather_df = None
@@ -490,9 +503,9 @@ class AirconOptimizer:
         )
         date_range = date_range[(date_range.hour >= 0) & (date_range.hour <= 23)]
 
-        # 期間最適化版を使用（電力合計、室温平均で評価）
+        # 期間最適化版を使用（簡略化版）
         opt = PeriodOptimizer(self.master, models, max_workers=6)  # 6ゾーン分
-        schedule = opt.optimize_period(date_range, weather_df, preference=preference)
+        schedule = opt.optimize_period(date_range, weather_df)
         optimization_end_time = time.perf_counter()
         processing_times["最適化"] = optimization_end_time - optimization_start_time
         print(
@@ -525,8 +538,271 @@ class AirconOptimizer:
         # schedule = None
         return schedule
 
+    def run_preprocessing_only(
+        self,
+        weather_api_key: Optional[str] = None,
+        coordinates: Optional[str] = None,
+        temperature_std_multiplier: float = 5.0,
+        power_std_multiplier: float = 5.0,
+    ):
+        """
+        前処理のみを実行
+
+        Args:
+            weather_api_key: Weather API キー
+            coordinates: 座標
+            temperature_std_multiplier: 温度データの外れ値判定係数
+            power_std_multiplier: 電力データの外れ値判定係数
+
+        Returns:
+            bool: 成功した場合True
+        """
+        if self.master is None:
+            print("[Preprocess] マスタ未読込")
+            return False
+
+        print("[Preprocess] 前処理のみ実行開始...")
+
+        # 座標情報をマスタから取得
+        if coordinates is None:
+            coordinates = self.master.get("store_info", {}).get(
+                "coordinates", "35.681236%2C139.767125"
+            )
+
+        # 前処理の実行
+        preprocessor = DataPreprocessor(self.store_name)
+        ac_raw_data, pm_raw_data = preprocessor.load_raw()
+        ac_processed_data = preprocessor.preprocess_ac(
+            ac_raw_data, temperature_std_multiplier
+        )
+        pm_processed_data = preprocessor.preprocess_pm(
+            pm_raw_data, power_std_multiplier
+        )
+
+        # 天候データの処理
+        weather_file = os.path.join(
+            self.proc_dir, f"weather_processed_{self.store_name}.csv"
+        )
+        if os.path.exists(weather_file):
+            print(f"[Preprocess] キャッシュされた天候データを使用: {weather_file}")
+            historical_weather_data = pd.read_csv(weather_file)
+            if "datetime" in historical_weather_data.columns:
+                historical_weather_data["datetime"] = pd.to_datetime(
+                    historical_weather_data["datetime"]
+                )
+        else:
+            print("[Preprocess] APIから天候データを取得...")
+            historical_weather_data = preprocessor._fetch_historical_weather(
+                ac_processed_data, pm_processed_data, weather_api_key, coordinates
+            )
+
+        # データの保存
+        preprocessor.save(ac_processed_data, pm_processed_data, historical_weather_data)
+        print("[Preprocess] 前処理完了")
+        return True
+
+    def run_aggregation_only(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        weather_api_key: Optional[str] = None,
+        coordinates: Optional[str] = None,
+        freq: str = "1H",
+    ):
+        """
+        集約のみを実行
+
+        Args:
+            start_date: 開始日
+            end_date: 終了日
+            weather_api_key: Weather API キー
+            coordinates: 座標
+            freq: 時間粒度
+
+        Returns:
+            pd.DataFrame: 集約されたデータ
+        """
+        if self.master is None:
+            print("[Aggregate] マスタ未読込")
+            return None
+
+        print("[Aggregate] 集約のみ実行開始...")
+
+        # 処理済みデータの読み込み
+        ac_processed_data, pm_processed_data, historical_weather_data = (
+            self._load_processed()
+        )
+
+        if ac_processed_data is None or pm_processed_data is None:
+            print("[Aggregate] 処理済みデータが見つかりません")
+            return None
+
+        # 座標情報をマスタから取得
+        if coordinates is None:
+            coordinates = self.master.get("store_info", {}).get(
+                "coordinates", "35.681236%2C139.767125"
+            )
+
+        # 天候データの取得
+        weather_df = None
+        if start_date and end_date:
+            weather_df = self._load_weather_forecast(
+                start_date, end_date, weather_api_key, coordinates
+            )
+
+        # 天候データの統合
+        combined_weather_df = None
+        if historical_weather_data is not None and not historical_weather_data.empty:
+            if weather_df is not None and not weather_df.empty:
+                historical_max_date = pd.to_datetime(
+                    historical_weather_data["datetime"]
+                ).max()
+                weather_df_filtered = weather_df[
+                    pd.to_datetime(weather_df["datetime"]) > historical_max_date
+                ]
+                if not weather_df_filtered.empty:
+                    combined_weather_df = pd.concat(
+                        [historical_weather_data, weather_df_filtered],
+                        ignore_index=True,
+                    )
+                else:
+                    combined_weather_df = historical_weather_data
+            else:
+                combined_weather_df = historical_weather_data
+        else:
+            combined_weather_df = weather_df
+
+        # 集約の実行
+        aggregator = AreaAggregator(self.master)
+        area_df = aggregator.build(
+            ac_processed_data, pm_processed_data, combined_weather_df, freq=freq
+        )
+
+        # 特徴量の処理
+        if area_df is not None:
+            from processing.utilities.helper_functions import (
+                analyze_feature_correlations,
+            )
+            from training.data_processor import DataProcessor
+
+            correlation_results = analyze_feature_correlations(area_df)
+            data_processor = DataProcessor()
+            area_df = data_processor.process_features(area_df)
+            data_processor.print_feature_summary(area_df)
+
+        # データの保存
+        if area_df is not None:
+            area_out = os.path.join(
+                self.proc_dir, f"features_processed_{self.store_name}.csv"
+            )
+            os.makedirs(self.proc_dir, exist_ok=True)
+            area_df.to_csv(area_out, index=False, encoding="utf-8-sig")
+            print(f"[Aggregate] 集約データを保存: {area_out}")
+
+        print("[Aggregate] 集約完了")
+        return area_df
+
+    def run_training_only(self):
+        """
+        モデル学習のみを実行
+
+        Returns:
+            dict: 学習済みモデル
+        """
+        if self.master is None:
+            print("[Train] マスタ未読込")
+            return None
+
+        print("[Train] モデル学習のみ実行開始...")
+
+        # 特徴量データの読み込み
+        area_df = self._load_features_directly()
+        if area_df is None:
+            print("[Train] 特徴量データが見つかりません")
+            return None
+
+        # モデル学習の実行
+        from training.model_builder import ModelBuilder
+
+        builder = ModelBuilder(self.store_name)
+        models = builder.train_by_zone(area_df, self.master)
+
+        print(f"[Train] モデル学習完了. 作成されたモデル数: {len(models)}")
+        return models
+
+    def run_optimization_only(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        weather_api_key: Optional[str] = None,
+        coordinates: Optional[str] = None,
+        freq: str = "1H",
+    ):
+        """
+        最適化のみを実行
+
+        Args:
+            start_date: 開始日
+            end_date: 終了日
+            weather_api_key: Weather API キー
+            coordinates: 座標
+            freq: 時間粒度
+
+        Returns:
+            dict: 最適化結果
+        """
+        if self.master is None:
+            print("[Optimize] マスタ未読込")
+            return None
+
+        print("[Optimize] 最適化のみ実行開始...")
+
+        # 日付の設定
+        if start_date is None or end_date is None:
+            today = pd.Timestamp.today().normalize()
+            start_date = today.strftime("%Y-%m-%d")
+            end_date = (today + pd.Timedelta(days=3)).strftime("%Y-%m-%d")
+
+        # 座標の設定（マスタデータから取得）
+        if coordinates is None:
+            coordinates = self.master.get("store_info", {}).get(
+                "coordinates", "35.681236%2C139.767125"
+            )
+
+        # モデルの読み込み
+        from training.model_builder import ModelBuilder
+
+        builder = ModelBuilder(self.store_name)
+        models = builder.load_models()
+
+        if not models:
+            print("[Optimize] モデルが見つかりません")
+            return None
+
+        # 天候データの読み込み
+        weather_df = self._load_weather_forecast(
+            start_date, end_date, weather_api_key, coordinates
+        )
+        if weather_df is None:
+            print("[Optimize] 天候データが見つかりません")
+            return None
+
+        # 最適化の実行
+        date_range = pd.date_range(
+            start=pd.to_datetime(start_date), end=pd.to_datetime(end_date), freq=freq
+        )
+        date_range = date_range[(date_range.hour >= 0) & (date_range.hour <= 23)]
+
+        opt = PeriodOptimizer(self.master, models, max_workers=6)
+        schedule = opt.optimize_period(date_range, weather_df)
+
+        # 出力の生成
+        Planner(self.store_name, self.master).export(schedule, self.plan_dir)
+
+        print("[Optimize] 最適化完了")
+        return schedule
+
 
 if __name__ == "__main__":
     # 例:
-    # AirconOptimizer("STORE_A").run(weather_api_key="YOUR_API_KEY")
     pass

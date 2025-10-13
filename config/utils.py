@@ -50,7 +50,7 @@ def load_config(use_remote_paths: bool = False):
         use_remote_paths (bool): True の場合 remote_paths を使用、False の場合 local_paths を使用
     """
     root_path = os.path.dirname(os.path.dirname(__file__))  # ルートパスを取得
-    config_path = "./config/config.yml"  # 設定ファイルのパス
+    config_path = "./config/config_paths.yml"  # 設定ファイルのパス
     abs_path = Path(root_path, config_path).absolute()  # 絶対パスを生成
 
     # カスタムタグを登録

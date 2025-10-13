@@ -102,7 +102,8 @@ class AreaAggregator:
                         ac_sub.groupby("Datetime")
                         .agg(
                             {
-                                "A/C Set Temperature": AreaAggregator._most_frequent,
+                                # TODO: Avgに変更すむ良いかどうか検討が必要。優先度低い
+                                "A/C Set Temperature": AreaAggregator._most_frequent, 
                                 "Indoor Temp.": "mean",  # 学習は平均室温
                                 "A/C ON/OFF": AreaAggregator._most_frequent,
                                 "A/C Mode": AreaAggregator._most_frequent,
@@ -307,7 +308,7 @@ class AreaAggregator:
                 )
 
             df["zone"] = zone_name
-            df.sort_values("Datetime", inplace=True)
+            df.sort_values("Datetime", ascending=False, inplace=True)  # Sort by latest first
             area_rows.append(df)
 
         area_df = (
@@ -315,6 +316,8 @@ class AreaAggregator:
         )
         # ラグ（前時刻室温）
         if not area_df.empty:
+            # Sort the final concatenated dataframe by Datetime in descending order (latest first)
+            area_df.sort_values("Datetime", ascending=False, inplace=True)
             # 時間特徴量の付与（曜日・時刻・月・週末）
             area_df["Datetime"] = pd.to_datetime(area_df["Datetime"])  # 安全化
             area_df["Date"] = area_df["Datetime"].dt.date
@@ -334,7 +337,7 @@ class AreaAggregator:
             except Exception:
                 area_df["IsHoliday"] = 0
             area_df["Indoor Temp. Lag1"] = (
-                area_df.sort_values(["zone", "Datetime"])
+                area_df.sort_values(["zone", "Datetime"], ascending=[True, True])  # Sort zones ascending, datetime ascending for lag calculation
                 .groupby("zone")["Indoor Temp."]
                 .shift(1)
             )
@@ -357,6 +360,9 @@ class AreaAggregator:
 
             # Datetime, Dateを最初に配置
             area_df = area_df[["Datetime", "Date"] + cols]
+            
+            # Final sort by Datetime in descending order (latest first) after all processing
+            area_df.sort_values("Datetime", ascending=False, inplace=True)
 
         return area_df
 

@@ -3,6 +3,8 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+
+
 # C extensions
 *.so
 
@@ -221,3 +223,9 @@ data/
 old/
 gdrive_service_account.json
 notebooks/
+all_settings_dashboard/
+validation_plots.html
+# Log files
+logs/
+analysis/output/
+visualization/

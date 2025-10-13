@@ -2,6 +2,10 @@
 # エアコン最適化システム - 実行サンプル
 # =============================================================================
 
+import argparse
+import sys
+from typing import Optional
+
 import pandas as pd
 
 # from analysis.reporting import generate_all_reports, reset_outputs
@@ -126,46 +130,97 @@ def print_optimization_summary(store_name, results, processing_times=None):
         results: Optimization results
         processing_times: Optional processing time information
     """
-    print_table(
-        data={
-            "Store": store_name,
-            "Status": "✅ Completed" if results else "❌ Failed",
-            "Zones Optimized": len(results) if results else 0,
-            "Total Hours": (
+    # Handle different result types
+    if isinstance(results, dict):
+        # Full optimization results
+        status = "✅ Completed" if results else "❌ Failed"
+        zones_optimized = len(results) if results else 0
+
+        # Check if results contain EnvPowerModels (from training) or schedules (from optimization)
+        if results and hasattr(next(iter(results.values())), "temp_model"):
+            # Training results - EnvPowerModels objects
+            total_hours = "N/A (Training)"
+        else:
+            # Optimization results - schedule objects with length
+            total_hours = (
                 sum(len(zone_schedule) for zone_schedule in results.values())
                 if results
                 else 0
-            ),
-        },
-        title="🎯 Optimization Summary",
+            )
+    elif isinstance(results, bool):
+        # Boolean results (preprocessing, training, etc.)
+        status = "✅ Completed" if results else "❌ Failed"
+        zones_optimized = "N/A"
+        total_hours = "N/A"
+    elif hasattr(results, "shape"):  # DataFrame or similar
+        # DataFrame results (aggregation, etc.)
+        status = (
+            "✅ Completed" if results is not None and not results.empty else "❌ Failed"
+        )
+        zones_optimized = f"{results.shape[0]} rows" if results is not None else "N/A"
+        total_hours = f"{results.shape[1]} cols" if results is not None else "N/A"
+    else:
+        # Other types
+        status = "✅ Completed" if results else "❌ Failed"
+        zones_optimized = "N/A"
+        total_hours = "N/A"
+
+    # Determine appropriate title and headers based on result type
+    if (
+        isinstance(results, dict)
+        and results
+        and hasattr(next(iter(results.values())), "temp_model")
+    ):
+        # Training results
+        title = "🤖 Training Summary"
+        headers = {
+            "Store": store_name,
+            "Status": status,
+            "Models Trained": zones_optimized,
+            "Details": total_hours,
+        }
+    else:
+        # Optimization or other results
+        title = "🎯 Optimization Summary"
+        headers = {
+            "Store": store_name,
+            "Status": status,
+            "Zones Optimized": zones_optimized,
+            "Total Hours": total_hours,
+        }
+
+    print_table(
+        data=headers,
+        title=title,
         column_widths=[20, 25, 18, 15],
     )
 
-    if results:
-        # Zone breakdown
-        zone_data = []
-        for zone_name, zone_schedule in results.items():
-            total_power = sum(
-                settings.get("pred_power", 0) for settings in zone_schedule.values()
-            )
-            avg_temp = sum(
-                settings.get("pred_temp", 25) for settings in zone_schedule.values()
-            ) / len(zone_schedule)
-            zone_data.append(
-                [
-                    zone_name,
-                    len(zone_schedule),
-                    f"{total_power:.1f} kWh",
-                    f"{avg_temp:.1f}°C",
-                ]
-            )
+    if isinstance(results, dict) and results:
+        # Zone breakdown (only for optimization results, not training results)
+        if not hasattr(next(iter(results.values())), "temp_model"):
+            zone_data = []
+            for zone_name, zone_schedule in results.items():
+                total_power = sum(
+                    settings.get("pred_power", 0) for settings in zone_schedule.values()
+                )
+                avg_temp = sum(
+                    settings.get("pred_temp", 25) for settings in zone_schedule.values()
+                ) / len(zone_schedule)
+                zone_data.append(
+                    [
+                        zone_name,
+                        len(zone_schedule),
+                        f"{total_power:.1f} kWh",
+                        f"{avg_temp:.1f}°C",
+                    ]
+                )
 
-        print_table(
-            data=zone_data,
-            title="📊 Zone Details",
-            headers=["Zone", "Hours", "Total Power", "Avg Temp"],
-            column_widths=[15, 10, 15, 12],
-        )
+            print_table(
+                data=zone_data,
+                title="📊 Zone Details",
+                headers=["Zone", "Hours", "Total Power", "Avg Temp"],
+                column_widths=[15, 10, 15, 12],
+            )
 
     if processing_times:
         # Processing times
@@ -187,41 +242,136 @@ def print_optimization_summary(store_name, results, processing_times=None):
         )
 
 
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(
+        description="エアコン最適化システム - 実行スクリプト",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+実行例:
+  uv run run_optimization.py --preprocess-only
+  uv run run_optimization.py --aggregate-only
+  uv run run_optimization.py --train-only
+  uv run run_optimization.py --optimize-only
+  uv run run_optimization.py  # フルパイプライン実行
+  uv run run_optimization.py --start-date 2024-01-01 --end-date 2024-01-02
+  uv run run_optimization.py --store Clea --skip-visualization
+        """,
+    )
+
+    # Store selection
+    parser.add_argument(
+        "--store", type=str, default="Clea", help="対象ストア名 (デフォルト: Clea)"
+    )
+
+    # Execution mode flags (can be combined)
+    parser.add_argument("--preprocess-only", action="store_true", help="前処理のみ実行")
+    parser.add_argument("--aggregate-only", action="store_true", help="集約のみ実行")
+    parser.add_argument("--train-only", action="store_true", help="モデル学習のみ実行")
+    parser.add_argument("--optimize-only", action="store_true", help="最適化のみ実行")
+
+    # Date range parameters
+    parser.add_argument("--start-date", type=str, help="最適化開始日 (YYYY-MM-DD形式)")
+    parser.add_argument("--end-date", type=str, help="最適化終了日 (YYYY-MM-DD形式)")
+
+    # Visualization
+    parser.add_argument(
+        "--skip-visualization", action="store_true", help="可視化をスキップ"
+    )
+
+    return parser.parse_args()
+
+
 def run_optimization_for_store(
     store_name,
-    temperature_std_multiplier=5.0,
-    power_std_multiplier=5.0,
-    skip_aggregation=True,
+    execution_mode: str = "full",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    skip_visualization: bool = False,
 ):
     """
     指定されたストアの最適化を実行
 
     Args:
         store_name (str): 対象ストア名
-        temperature_std_multiplier (float): 温度データの外れ値判定係数（デフォルト: 5.0）
-        power_std_multiplier (float): 電力データの外れ値判定係数（デフォルト: 5.0）
-        skip_aggregation (bool): 集約をスキップして既存のfeatures_processed_*.csvを直接読み込む（デフォルト: False）
+        execution_mode (str): 実行モード ("full", "preprocess", "aggregate", "train", "optimize")
+        start_date (str): 最適化開始日
+        end_date (str): 最適化終了日
+        skip_visualization (bool): 可視化をスキップするかどうか
     """
-    print(f"🚀 {store_name}の最適化パイプライン開始")
+    print(f"🚀 {store_name}の最適化パイプライン開始 (モード: {execution_mode})")
 
-    # 最適化システムの初期化（前処理をスキップ）
-    enable_preprocessing = True  # 前処理を行うかどうか
-    skip_aggregation = False  # 集約をスキップするかどうか
+    # 最適化システムの初期化
+    enable_preprocessing = execution_mode in ["full", "preprocess"]
+    skip_aggregation = execution_mode in ["train", "optimize"]
+
     optimizer = AirconOptimizer(
         store_name,
         enable_preprocessing=enable_preprocessing,
         skip_aggregation=skip_aggregation,
     )
 
-    # フルパイプラインの実行（座標はマスタから自動取得）
-    results = optimizer.run(
-        weather_api_key=WEATHER_API_KEY,
-        temperature_std_multiplier=temperature_std_multiplier,
-        power_std_multiplier=power_std_multiplier,
-        preference="energy",  # 電力優先で最適化
-    )
+    # Hardcoded values (not configurable via command line)
+    temperature_std_multiplier = 5.0
+    power_std_multiplier = 5.0
+    weather_api_key = WEATHER_API_KEY
+    coordinates = None  # Will use master data coordinates
+    freq = "1H"  # Default frequency
 
-    if results:
+    # 実行モードに応じた処理
+    if execution_mode == "preprocess":
+        print("📊 前処理のみ実行")
+        results = optimizer.run_preprocessing_only(
+            weather_api_key=weather_api_key,
+            coordinates=coordinates,
+            temperature_std_multiplier=temperature_std_multiplier,
+            power_std_multiplier=power_std_multiplier,
+        )
+    elif execution_mode == "aggregate":
+        print("🔄 集約のみ実行")
+        results = optimizer.run_aggregation_only(
+            start_date=start_date,
+            end_date=end_date,
+            weather_api_key=weather_api_key,
+            coordinates=coordinates,
+            freq=freq,
+        )
+    elif execution_mode == "train":
+        print("🤖 モデル学習のみ実行")
+        results = optimizer.run_training_only()
+    elif execution_mode == "optimize":
+        print("⚡ 最適化のみ実行")
+        results = optimizer.run_optimization_only(
+            start_date=start_date,
+            end_date=end_date,
+            weather_api_key=weather_api_key,
+            coordinates=coordinates,
+            freq=freq,
+        )
+    else:  # full
+        print("🔄 フルパイプライン実行")
+        results = optimizer.run(
+            weather_api_key=weather_api_key,
+            coordinates=coordinates,
+            start_date=start_date,
+            end_date=end_date,
+            freq=freq,
+            temperature_std_multiplier=temperature_std_multiplier,
+            power_std_multiplier=power_std_multiplier,
+        )
+
+    # Check if results indicate success (handle different types)
+    success = False
+    if isinstance(results, dict):
+        success = bool(results)
+    elif isinstance(results, bool):
+        success = results
+    elif hasattr(results, "shape"):  # DataFrame or similar
+        success = results is not None and not results.empty
+    else:
+        success = bool(results)
+
+    if success:
         # Print optimization summary in table format
         print_optimization_summary(store_name, results)
 
@@ -278,48 +428,92 @@ def run_optimization_for_store(
         #     print(f"⚠️ 可視化でエラーが発生しました: {e}")
         #     print("最適化結果は正常に生成されています")
 
-        return True
+        return success
     else:
         print_optimization_summary(store_name, results)
-        return False
+        return success
 
 
 def main():
     """メイン実行関数"""
-    # 対象ストアのリスト（Cleaのみ）
-    target_stores = ["Clea"]
+    # コマンドライン引数の解析
+    args = parse_arguments()
 
-    # Store execution results
-    execution_results = []
+    # 実行モードの決定 (複数のフラグを組み合わせ可能)
+    execution_modes = []
+    if args.preprocess_only:
+        execution_modes.append("preprocess")
+    if args.aggregate_only:
+        execution_modes.append("aggregate")
+    if args.train_only:
+        execution_modes.append("train")
+    if args.optimize_only:
+        execution_modes.append("optimize")
 
-    # 各ストアの最適化を実行
-    for store_name in target_stores:
-        print(f"\n{'='*70}")
-        print(f"🏢 {store_name} の最適化開始")
-        print(f"{'='*70}")
+    if not execution_modes:
+        execution_mode = "full"
+    elif len(execution_modes) == 1:
+        execution_mode = execution_modes[0]
+    else:
+        # Multiple modes specified - execute them in sequence
+        print(f"🔄 Multiple execution modes specified: {execution_modes}")
+        print(f"🔄 Will execute them in sequence")
 
-        success = run_optimization_for_store(
-            store_name=store_name,
-            temperature_std_multiplier=5.0,
-            power_std_multiplier=5.0,
+        # Execute each mode in sequence
+        for i, mode in enumerate(execution_modes):
+            print(f"\n{'='*70}")
+            print(f"🏢 {args.store} - Step {i+1}/{len(execution_modes)}: {mode}")
+            print(f"{'='*70}")
+
+            success = run_optimization_for_store(
+                store_name=args.store,
+                execution_mode=mode,
+                start_date=args.start_date,
+                end_date=args.end_date,
+                skip_visualization=args.skip_visualization,
+            )
+
+            if not success:
+                print(f"❌ Step {i+1} ({mode}) failed. Stopping execution.")
+                return False
+
+        print(
+            f"\n✅ All {len(execution_modes)} execution modes completed successfully!"
         )
+        return True
 
-        # Store result for summary
-        execution_results.append(
-            [
-                store_name,
-                "✅ Completed" if success else "❌ Failed",
-                "Success" if success else "Error",
-            ]
-        )
+    # Single mode execution
+    print(f"\n{'='*70}")
+    print(f"🏢 {args.store} の最適化開始 (モード: {execution_mode})")
+    print(f"{'='*70}")
 
-    # Print final summary
+    # 最適化の実行
+    success = run_optimization_for_store(
+        store_name=args.store,
+        execution_mode=execution_mode,
+        start_date=args.start_date,
+        end_date=args.end_date,
+        skip_visualization=args.skip_visualization,
+    )
+
+    # 実行結果の表示
+    execution_results = [
+        [
+            args.store,
+            "✅ Completed" if success else "❌ Failed",
+            "Success" if success else "Error",
+        ]
+    ]
+
     print_table(
         data=execution_results,
         title="🎯 Final Execution Summary",
         headers=["Store", "Status", "Result"],
         column_widths=[15, 15, 10],
     )
+
+    # 終了コードの設定
+    sys.exit(0 if success else 1)
 
 
 if __name__ == "__main__":

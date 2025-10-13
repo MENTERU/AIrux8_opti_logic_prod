@@ -6,12 +6,12 @@ local_paths:
   master_data_path: "data/01_MasterData"
   output_data_path: "data/04_PlanningData"
   valid_results_path: "data/05_ValidationResults"
+  local_file_path: "data/04_PlanningData"
 
   # Google Drive設定　（local_pathsからの相対パス）
   service_account_json: "config/gdrive_service_account.json"
   folder_id: "11WsqJyj0yq8AVqU5qQiRKmSxiR2_A_9E"
   encoding: "utf-8"
-  local_file_path: "data/04_PlanningData"
 
 # 旧Google Drive設定（現在使用停止中）
 remote_paths:
