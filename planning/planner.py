@@ -9,7 +9,6 @@ from processing.utilities.category_mapping_loader import (
     get_inverse_category_mapping,
 )
 
-
 MODE_LABEL_TO_CODE = get_category_mapping("A/C Mode")
 MODE_CODE_TO_LABEL = get_inverse_category_mapping("A/C Mode")
 FALLBACK_MODE_LABEL = (
@@ -18,10 +17,14 @@ FALLBACK_MODE_LABEL = (
 FALLBACK_MODE_CODE = MODE_LABEL_TO_CODE[FALLBACK_MODE_LABEL]
 
 FAN_LABEL_TO_CODE = get_category_mapping("A/C Fan Speed")
+FAN_CODE_TO_LABEL = get_inverse_category_mapping("A/C Fan Speed")
 FALLBACK_FAN_CODE = (
     FAN_LABEL_TO_CODE.get("Low")
     if "Low" in FAN_LABEL_TO_CODE
     else next(iter(FAN_LABEL_TO_CODE.values()))
+)
+FALLBACK_FAN_LABEL = (
+    "Low" if "Low" in FAN_LABEL_TO_CODE else next(iter(FAN_LABEL_TO_CODE.keys()))
 )
 
 
@@ -36,6 +39,10 @@ class Planner:
     @staticmethod
     def _mode_text(n: int) -> str:
         return MODE_CODE_TO_LABEL.get(n, FALLBACK_MODE_LABEL)
+
+    @staticmethod
+    def _fan_text(n: int) -> str:
+        return FAN_CODE_TO_LABEL.get(n, FALLBACK_FAN_LABEL).upper()
 
     def export(self, schedule: Dict[str, Dict[pd.Timestamp, dict]], out_dir: str):
         os.makedirs(out_dir, exist_ok=True)
@@ -54,10 +61,24 @@ class Planner:
         # 制御区分別
         rows = []
         for t in sorted({ts for z in schedule for ts in schedule[z].keys()}):
-            rec = {"Date Time": t.strftime("%Y/%m/%d %H:%M")}
+            # Get outside_temp from any zone's schedule for this timestamp
+            outside_temp = None
             for z, zs in schedule.items():
                 s = zs.get(t, {})
-                rec[f"{z}_OnOFF"] = "ON" if s else "OFF"
+                if s and "outside_temp" in s:
+                    outside_temp = s["outside_temp"]
+                    break
+
+            rec = {
+                "Date Time": t.strftime("%Y/%m/%d %H:%M"),
+                "outside_temp": outside_temp if outside_temp is not None else np.nan,
+            }
+            for z, zs in schedule.items():
+                s = zs.get(t, {})
+                # Check if mode is OFF to determine OnOFF status
+                mode = s.get("mode", FALLBACK_MODE_CODE) if s else FALLBACK_MODE_CODE
+                is_off = mode == "OFF" or mode == 0 or str(mode).upper() == "OFF"
+                rec[f"{z}_OnOFF"] = "OFF" if is_off else "ON"
                 rec[f"{z}_Mode"] = (
                     self._mode_text(s.get("mode", FALLBACK_MODE_CODE))
                     if s
@@ -65,12 +86,16 @@ class Planner:
                 )
                 rec[f"{z}_SetTemp"] = s.get("set_temp", 25) if s else 25
                 rec[f"{z}_FanSpeed"] = (
-                    s.get("fan", FALLBACK_FAN_CODE) if s else FALLBACK_FAN_CODE
+                    self._fan_text(s.get("fan", FALLBACK_FAN_CODE))
+                    if s
+                    else FALLBACK_FAN_LABEL
                 )
                 # 予測電力・予測室温（可視化用）
-                rec[f"{z}_PredPower"] = float(s.get("pred_power", 0.0)) if s else 0.0
+                rec[f"{z}_PredPower"] = (
+                    round(float(s.get("pred_power", 0.0)), 2) if s else 0.0
+                )
                 rec[f"{z}_PredTemp"] = (
-                    float(s.get("pred_temp", np.nan)) if s else np.nan
+                    round(float(s.get("pred_temp", np.nan)), 2) if s else np.nan
                 )
             rows.append(rec)
         ctrl_df = pd.DataFrame(rows)
@@ -87,11 +112,27 @@ class Planner:
                 units.extend(ou.get("indoor_units", []))
             zone_to_units[z] = list(dict.fromkeys(units))
         for t in sorted({ts for z in schedule for ts in schedule[z].keys()}):
-            rec = {"Date Time": t.strftime("%Y/%m/%d %H:%M")}
+            # Get outside_temp from any zone's schedule for this timestamp
+            outside_temp = None
+            for z, zs in schedule.items():
+                s = zs.get(t, {})
+                if s and "outside_temp" in s:
+                    outside_temp = s["outside_temp"]
+                    break
+
+            rec = {
+                "Date Time": t.strftime("%Y/%m/%d %H:%M"),
+                "outside_temp": outside_temp if outside_temp is not None else np.nan,
+            }
             for z, units in zone_to_units.items():
                 s = schedule.get(z, {}).get(t, {})
                 for u in units:
-                    rec[f"{u}_OnOFF"] = "ON" if s else "OFF"
+                    # Check if mode is OFF to determine OnOFF status
+                    mode = (
+                        s.get("mode", FALLBACK_MODE_CODE) if s else FALLBACK_MODE_CODE
+                    )
+                    is_off = mode == "OFF" or mode == 0 or str(mode).upper() == "OFF"
+                    rec[f"{u}_OnOFF"] = "OFF" if is_off else "ON"
                     rec[f"{u}_Mode"] = (
                         self._mode_text(s.get("mode", FALLBACK_MODE_CODE))
                         if s
@@ -99,9 +140,9 @@ class Planner:
                     )
                     rec[f"{u}_SetTemp"] = s.get("set_temp", 25) if s else 25
                     rec[f"{u}_FanSpeed"] = (
-                        s.get("fan", FALLBACK_FAN_CODE)
+                        self._fan_text(s.get("fan", FALLBACK_FAN_CODE))
                         if s
-                        else FALLBACK_FAN_CODE
+                        else FALLBACK_FAN_LABEL
                     )
             unit_rows.append(rec)
         unit_df = pd.DataFrame(unit_rows)

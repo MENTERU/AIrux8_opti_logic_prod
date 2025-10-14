@@ -8,6 +8,7 @@ from processing.utilities.category_mapping_loader import (
     get_default_category_value,
     map_category_series,
 )
+from processing.utilities.temp_range_export import export_temp_range_stats
 from processing.utilities.weatherapi_client import VisualCrossingWeatherAPIDataFetcher
 
 
@@ -190,8 +191,8 @@ class DataPreprocessor:
                     )
 
                     original_zone_series = zone_data[column]
-                    mapped_series, applied_mapping, unmapped_values = map_category_series(
-                        original_zone_series, column
+                    mapped_series, applied_mapping, unmapped_values = (
+                        map_category_series(original_zone_series, column)
                     )
                     zone_data[column] = mapped_series
 
@@ -209,7 +210,9 @@ class DataPreprocessor:
                         print(
                             f"[DataPreprocessor] {zone} - {column} マッピングされなかった値: {unmapped_values}"
                         )
-                        unmapped_mask = mapped_series.isna() & original_zone_series.notna()
+                        unmapped_mask = (
+                            mapped_series.isna() & original_zone_series.notna()
+                        )
                         default_value = get_default_category_value(column)
                         if default_value is not None:
                             zone_data.loc[unmapped_mask, column] = default_value
@@ -389,7 +392,15 @@ class DataPreprocessor:
         weather_data: Optional[pd.DataFrame],
     ):
         if ac_control_data is not None:
-            ac_control_data.to_csv(
+            # Sort by Datetime column in descending order (latest first)
+            if "Datetime" in ac_control_data.columns:
+                ac_sorted = ac_control_data.sort_values("Datetime", ascending=False)
+            else:
+                print(
+                    f"⚠️ No 'Datetime' column found in AC control data. Available columns: {list(ac_control_data.columns)}"
+                )
+                ac_sorted = ac_control_data
+            ac_sorted.to_csv(
                 os.path.join(
                     self.output_dir, f"ac_control_processed_{self.store_name}.csv"
                 ),
@@ -397,7 +408,15 @@ class DataPreprocessor:
                 encoding="utf-8-sig",
             )
         if power_meter_data is not None:
-            power_meter_data.to_csv(
+            # Sort by Datetime column in descending order (latest first)
+            if "Datetime" in power_meter_data.columns:
+                pm_sorted = power_meter_data.sort_values("Datetime", ascending=False)
+            else:
+                print(
+                    f"⚠️ No 'Datetime' column found in power meter data. Available columns: {list(power_meter_data.columns)}"
+                )
+                pm_sorted = power_meter_data
+            pm_sorted.to_csv(
                 os.path.join(
                     self.output_dir, f"power_meter_processed_{self.store_name}.csv"
                 ),
@@ -405,10 +424,38 @@ class DataPreprocessor:
                 encoding="utf-8-sig",
             )
         if weather_data is not None:
-            weather_data.to_csv(
+            # Find the datetime column (could be "Datetime" or "datetime")
+            datetime_col = None
+            for col in ["Datetime", "datetime"]:
+                if col in weather_data.columns:
+                    datetime_col = col
+                    break
+
+            if datetime_col:
+                # Sort by datetime column in descending order (latest first)
+                weather_sorted = weather_data.sort_values(datetime_col, ascending=False)
+            else:
+                # If no datetime column found, use original data
+                print(
+                    f"⚠️ No datetime column found in weather data. Available columns: {list(weather_data.columns)}"
+                )
+                weather_sorted = weather_data
+
+            weather_sorted.to_csv(
                 os.path.join(
                     self.output_dir, f"weather_processed_{self.store_name}.csv"
                 ),
                 index=False,
                 encoding="utf-8-sig",
             )
+
+        # 自動Excel出力処理 (AC_setvalue_range_analysis_*.xlsx)
+        try:
+            print("[DataPreprocessor] 自動Excel出力を開始します...")
+            export_temp_range_stats(
+                ac_df=ac_control_data,
+                store_name=self.store_name,
+                output_dir=self.output_dir,
+            )
+        except Exception as e:
+            print(f"[DataPreprocessor] Failed to export monthly range Excel: {e}")
