@@ -77,26 +77,41 @@ class Planner:
                 s = zs.get(t, {})
                 # Check if mode is OFF to determine OnOFF status
                 mode = s.get("mode", FALLBACK_MODE_CODE) if s else FALLBACK_MODE_CODE
-                is_off = mode == "OFF" or mode == 0 or str(mode).upper() == "OFF"
+                is_off = (
+                    mode == "OFF"
+                    or mode == 0
+                    or str(mode).upper() == "OFF"
+                    or mode is None
+                )
                 rec[f"{z}_OnOFF"] = "OFF" if is_off else "ON"
-                rec[f"{z}_Mode"] = (
-                    self._mode_text(s.get("mode", FALLBACK_MODE_CODE))
-                    if s
-                    else FALLBACK_MODE_LABEL
-                )
-                rec[f"{z}_SetTemp"] = s.get("set_temp", 25) if s else 25
-                rec[f"{z}_FanSpeed"] = (
-                    self._fan_text(s.get("fan", FALLBACK_FAN_CODE))
-                    if s
-                    else FALLBACK_FAN_LABEL
-                )
+
+                # Handle None values for non-business hours
+                if s and s.get("mode") is not None:
+                    rec[f"{z}_Mode"] = self._mode_text(
+                        s.get("mode", FALLBACK_MODE_CODE)
+                    )
+                else:
+                    rec[f"{z}_Mode"] = ""  # Empty for non-business hours
+
+                if s and s.get("set_temp") is not None:
+                    rec[f"{z}_SetTemp"] = s.get("set_temp", 25)
+                else:
+                    rec[f"{z}_SetTemp"] = ""  # Empty for non-business hours
+
+                if s and s.get("fan") is not None:
+                    rec[f"{z}_FanSpeed"] = self._fan_text(
+                        s.get("fan", FALLBACK_FAN_CODE)
+                    )
+                else:
+                    rec[f"{z}_FanSpeed"] = ""  # Empty for non-business hours
                 # 予測電力・予測室温（可視化用）
                 rec[f"{z}_PredPower"] = (
                     round(float(s.get("pred_power", 0.0)), 2) if s else 0.0
                 )
-                rec[f"{z}_PredTemp"] = (
-                    round(float(s.get("pred_temp", np.nan)), 2) if s else np.nan
-                )
+                if s and s.get("pred_temp") is not None and s.get("pred_temp") != 0.0:
+                    rec[f"{z}_PredTemp"] = round(float(s.get("pred_temp")), 2)
+                else:
+                    rec[f"{z}_PredTemp"] = 0.0  # 0.0 for non-business hours
             rows.append(rec)
         ctrl_df = pd.DataFrame(rows)
         ctrl_path = os.path.join(out_dir, f"control_type_schedule_{date_str}.csv")
@@ -131,19 +146,33 @@ class Planner:
                     mode = (
                         s.get("mode", FALLBACK_MODE_CODE) if s else FALLBACK_MODE_CODE
                     )
-                    is_off = mode == "OFF" or mode == 0 or str(mode).upper() == "OFF"
+                    is_off = (
+                        mode == "OFF"
+                        or mode == 0
+                        or str(mode).upper() == "OFF"
+                        or mode is None
+                    )
                     rec[f"{u}_OnOFF"] = "OFF" if is_off else "ON"
-                    rec[f"{u}_Mode"] = (
-                        self._mode_text(s.get("mode", FALLBACK_MODE_CODE))
-                        if s
-                        else FALLBACK_MODE_LABEL
-                    )
-                    rec[f"{u}_SetTemp"] = s.get("set_temp", 25) if s else 25
-                    rec[f"{u}_FanSpeed"] = (
-                        self._fan_text(s.get("fan", FALLBACK_FAN_CODE))
-                        if s
-                        else FALLBACK_FAN_LABEL
-                    )
+
+                    # Handle None values for non-business hours
+                    if s and s.get("mode") is not None:
+                        rec[f"{u}_Mode"] = self._mode_text(
+                            s.get("mode", FALLBACK_MODE_CODE)
+                        )
+                    else:
+                        rec[f"{u}_Mode"] = ""  # Empty for non-business hours
+
+                    if s and s.get("set_temp") is not None:
+                        rec[f"{u}_SetTemp"] = s.get("set_temp", 25)
+                    else:
+                        rec[f"{u}_SetTemp"] = ""  # Empty for non-business hours
+
+                    if s and s.get("fan") is not None:
+                        rec[f"{u}_FanSpeed"] = self._fan_text(
+                            s.get("fan", FALLBACK_FAN_CODE)
+                        )
+                    else:
+                        rec[f"{u}_FanSpeed"] = ""  # Empty for non-business hours
             unit_rows.append(rec)
         unit_df = pd.DataFrame(unit_rows)
         unit_path = os.path.join(out_dir, f"unit_schedule_{date_str}.csv")
