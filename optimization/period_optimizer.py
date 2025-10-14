@@ -166,7 +166,6 @@ def optimize_zone_period(
     temp_change_violations = (
         0  # Track how many times temp change constraint is violated
     )
-    mode_transition_violations = 0  # Track mode transition constraint violations
 
     # 各時刻で最適化
     for timestamp in date_range:
@@ -189,14 +188,16 @@ def optimize_zone_period(
         )
 
         if not is_biz:
-            # Non-business hours: Set mode to OFF with consistent 22°C set temperature
+            # Non-business hours: Only set essential fields, others remain empty
             best_combination = {
-                "set_temp": 22.0,  # Consistent set temperature for all areas during non-business hours
-                "mode": "OFF",
-                "fan": "LOW",  # Default fan speed for OFF mode
-                "pred_temp": last_temp,  # Temperature remains the same when OFF
-                "pred_power": 0.0,  # No power consumption when OFF
-                "outside_temp": weather["outdoor_temp"],
+                "set_temp": None,  # No set temperature needed outside business hours
+                "mode": None,  # No mode setting needed outside business hours
+                "fan": None,  # No fan setting needed outside business hours
+                "pred_temp": 0.0,  # No temperature prediction needed outside business hours
+                "pred_power": 0.0,  # No power consumption when OFF (needed for power calculation)
+                "outside_temp": weather[
+                    "outdoor_temp"
+                ],  # Weather data needed for context
             }
         else:
             # Business hours: Run full optimization
@@ -355,13 +356,18 @@ def optimize_zone_period(
 
         # スケジュールに追加
         schedule[timestamp] = best_combination
-        last_temp = best_combination["pred_temp"]
-        last_set_temp = best_combination[
-            "set_temp"
-        ]  # Track set temperature for next hour
-        last_mode = best_combination[
-            "mode"
-        ]  # Track mode for next hour's transition constraints
+
+        # Track values for next hour (only if not None/0.0)
+        if (
+            best_combination["pred_temp"] is not None
+            and best_combination["pred_temp"] != 0.0
+        ):
+            last_temp = best_combination["pred_temp"]
+        if best_combination["set_temp"] is not None:
+            last_set_temp = best_combination["set_temp"]
+        if best_combination["mode"] is not None:
+            last_mode = best_combination["mode"]
+
         total_power += best_combination["pred_power"]
 
     # 結果の表示
@@ -406,6 +412,7 @@ class PeriodOptimizer:
         weather_df: pd.DataFrame,
     ) -> Dict[str, Dict[pd.Timestamp, dict]]:
         """期間最適化を実行"""
+
         print(
             f"[PeriodOptimizer] Starting period optimization for {len(date_range)} hours"
         )
@@ -463,4 +470,3 @@ class PeriodOptimizer:
         print(f"[PeriodOptimizer] Optimized {len(results)} zones")
 
         return results
-

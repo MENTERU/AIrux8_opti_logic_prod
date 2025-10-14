@@ -385,11 +385,24 @@ class DataPreprocessor:
             print(f"[DataPreprocessor] Error fetching historical weather data: {e}")
             return None
 
+    def _export_temp_range_stats(self, ac_control_data: pd.DataFrame):
+        # 自動Excel出力処理 (AC_setvalue_range_analysis_*.xlsx)
+        try:
+            print("[DataPreprocessor] 自動Excel出力を開始します...")
+            export_temp_range_stats(
+                ac_df=ac_control_data,
+                store_name=self.store_name,
+                output_dir=self.output_dir,
+            )
+        except Exception as e:
+            print(f"[DataPreprocessor] Failed to export monthly range Excel: {e}")
+
     def save(
         self,
         ac_control_data: Optional[pd.DataFrame],
         power_meter_data: Optional[pd.DataFrame],
         weather_data: Optional[pd.DataFrame],
+        export_temp_range_stats: bool = False,
     ):
         if ac_control_data is not None:
             # Sort by Datetime column in descending order (latest first)
@@ -449,13 +462,6 @@ class DataPreprocessor:
                 encoding="utf-8-sig",
             )
 
-        # 自動Excel出力処理 (AC_setvalue_range_analysis_*.xlsx)
-        try:
-            print("[DataPreprocessor] 自動Excel出力を開始します...")
-            export_temp_range_stats(
-                ac_df=ac_control_data,
-                store_name=self.store_name,
-                output_dir=self.output_dir,
-            )
-        except Exception as e:
-            print(f"[DataPreprocessor] Failed to export monthly range Excel: {e}")
+        # 月別温度レンジ分析Excel出力
+        if export_temp_range_stats:
+            self._export_temp_range_stats(ac_control_data)

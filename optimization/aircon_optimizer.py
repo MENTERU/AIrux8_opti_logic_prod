@@ -226,6 +226,21 @@ class AirconOptimizer:
         temperature_std_multiplier: float = 5.0,
         power_std_multiplier: float = 5.0,
     ):
+        """全ての処理を実行
+        実行順序: 前処理 -> 集約 -> モデル学習 -> 最適化
+
+        Args:
+            weather_api_key: Weather API キー
+            coordinates: 座標
+            start_date: 開始日
+            end_date: 終了日
+            freq: 時間粒度
+            temperature_std_multiplier: 温度データの外れ値判定係数
+            power_std_multiplier: 電力データの外れ値判定係数
+
+        Returns:
+            dict: 最適化結果 (モデル, スケジュール)
+        """
         if self.master is None:
             print("[Run] マスタ未読込")
             return None
@@ -286,7 +301,10 @@ class AirconOptimizer:
                 print("[Run] Historical weather data fetched from API, saving...")
             print("[Run] Saving processed data...")
             preprocessor.save(
-                ac_processed_data, pm_processed_data, historical_weather_data
+                ac_processed_data,
+                pm_processed_data,
+                historical_weather_data,
+                export_temp_range_stats=False,
             )
             preprocessing_end_time = time.perf_counter()
             processing_times["前処理"] = (
@@ -597,7 +615,12 @@ class AirconOptimizer:
             )
 
         # データの保存
-        preprocessor.save(ac_processed_data, pm_processed_data, historical_weather_data)
+        preprocessor.save(
+            ac_processed_data,
+            pm_processed_data,
+            historical_weather_data,
+            export_temp_range_stats=False,
+        )
         print("[Preprocess] 前処理完了")
         return True
 
