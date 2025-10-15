@@ -183,7 +183,7 @@ class ModelBuilder:
         return X_clean, Y_clean
 
     def train_by_zone(
-        self, area_df: pd.DataFrame, master: dict
+        self, area_df: pd.DataFrame
     ) -> Dict[str, EnvPowerModels]:
         print(
             f"[ModelBuilder] Starting train_by_zone. "

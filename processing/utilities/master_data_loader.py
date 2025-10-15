@@ -85,8 +85,10 @@ class MasterDataLoader:
             print(f"[MasterDataLoader] Store info読み込みエラー: {e}")
             return None
 
-    def get_master_data_for_aggregator(self) -> Optional[dict]:
-        """Get complete master data structure for aggregator from Excel file"""
+    def get_complete_master_data(self) -> Optional[dict]:
+        """Get complete master data structure from consolidated 制御マスタ sheet for current month only"""
+        from datetime import datetime
+
         from config.utils import get_data_path
 
         master_dir = get_data_path("master_data_path")
@@ -98,48 +100,62 @@ class MasterDataLoader:
 
         try:
             print(
-                f"[MasterDataLoader] Building master data for aggregator from: {excel_path}"
+                f"[MasterDataLoader] Building master data from consolidated 制御マスタ sheet: {excel_path}"
             )
 
-            # Read all relevant sheets
+            # Read all sheets
             all_sheets = pd.read_excel(excel_path, sheet_name=None)
             print(f"[MasterDataLoader] Available sheets: {list(all_sheets.keys())}")
 
-            # Build the master data structure
-            master_data = {"store_name": self.store_name, "zones": {}}
+            # Get current month
+            current_month = datetime.now().month
+            current_month_japanese = f"{current_month}月"
+            print(
+                f"[MasterDataLoader] Current month: {current_month} ({current_month_japanese})"
+            )
 
-            # Process MASTER sheet to get zone information
-            if "MASTER" in all_sheets:
-                master_df = all_sheets["MASTER"]
-                print(
-                    f"[MasterDataLoader] Processing MASTER sheet: shape={master_df.shape}"
-                )
+            # Initialize master data structure
+            master_data = {
+                "store_info": {
+                    "name": self.store_name,
+                    "area": "Tokyo",  # Default value
+                    "coordinates": self.get_coordinates() or "35.681236%2C139.767124",
+                },
+                "zones": {},
+            }
 
-                # Get unique zones
-                zones = master_df["制御区分"].dropna().unique()
-                print(f"[MasterDataLoader] Found zones: {list(zones)}")
+            # Process MASTER sheet for equipment mapping
+            if "MASTER" not in all_sheets:
+                print(f"[MasterDataLoader] ERROR: MASTER sheet not found")
+                return None
 
-                for zone_name in zones:
-                    if pd.isna(zone_name):
-                        continue
+            master_df = all_sheets["MASTER"]
+            print(
+                f"[MasterDataLoader] Processing MASTER sheet for equipment mapping: shape={master_df.shape}"
+            )
 
-                    # Initialize zone structure
-                    master_data["zones"][zone_name] = {"outdoor_units": {}}
-                    print(f"[MasterDataLoader] Processing zone: {zone_name}")
+            # Get unique zones from MASTER sheet
+            zones = master_df["制御区分"].dropna().unique()
+            print(f"[MasterDataLoader] Found zones in MASTER: {list(zones)}")
 
-            # Process equipment mapping from MASTER sheet (電力予測区分 -> 環境予測区分)
+            # Initialize zone structures
+            for zone_name in zones:
+                if pd.isna(zone_name):
+                    continue
+                master_data["zones"][zone_name] = {"outdoor_units": {}}
+                print(f"[MasterDataLoader] Initialized zone: {zone_name}")
+
+            # Process equipment mapping from MASTER sheet
             print(f"[MasterDataLoader] Processing equipment mapping from MASTER sheet")
-
-            # Map equipment to zones using MASTER sheet data
             for _, row in master_df.iterrows():
                 zone_name = row["制御区分"]
-                outdoor_unit = row["電力予測区分"]  # 電力予測区分 = outdoor unit
-                indoor_unit = row["環境予測区分"]  # 環境予測区分 = indoor unit
+                outdoor_unit = row["電力予測区分"]
+                indoor_unit = row["環境予測区分"]
 
                 if pd.isna(zone_name) or pd.isna(outdoor_unit) or pd.isna(indoor_unit):
                     continue
 
-                # Clean up outdoor unit ID (remove trailing comma if present)
+                # Clean up outdoor unit ID
                 outdoor_unit = str(outdoor_unit).rstrip(",").strip()
 
                 if zone_name in master_data["zones"]:
@@ -149,35 +165,136 @@ class MasterDataLoader:
                     ):
                         master_data["zones"][zone_name]["outdoor_units"][
                             outdoor_unit
-                        ] = {
-                            "load_share": 1.0,  # Default value as requested
-                            "indoor_units": [],
-                        }
+                        ] = {"load_share": 1.0, "indoor_units": []}
                     master_data["zones"][zone_name]["outdoor_units"][outdoor_unit][
                         "indoor_units"
                     ].append(indoor_unit)
-                    print(
-                        f"[MasterDataLoader] Mapped {outdoor_unit} -> {indoor_unit} for zone {zone_name}"
-                    )
 
-            print(f"[MasterDataLoader] Master data for aggregator built successfully")
+            # Process consolidated 制御マスタ sheet for current month settings
+            if "制御マスタ" not in all_sheets:
+                print(f"[MasterDataLoader] ERROR: 制御マスタ sheet not found")
+                return None
+
+            control_master_df = all_sheets["制御マスタ"]
+            print(
+                f"[MasterDataLoader] Processing 制御マスタ sheet: shape={control_master_df.shape}"
+            )
+
+            # Filter for current month only
+            current_month_data = control_master_df[
+                control_master_df["月"] == current_month_japanese
+            ]
+            print(
+                f"[MasterDataLoader] Current month data rows: {len(current_month_data)}"
+            )
+
+            if len(current_month_data) == 0:
+                print(
+                    f"[MasterDataLoader] WARNING: No data found for current month {current_month_japanese}"
+                )
+                # Use default settings
+                for zone_name in master_data["zones"]:
+                    master_data["zones"][zone_name].update(
+                        {
+                            "start_time": "07:00",
+                            "end_time": "20:00",
+                            "comfort_min": 22.0,
+                            "comfort_max": 25.0,
+                            "setpoint_min": 22.0,
+                            "setpoint_max": 28.0,
+                            "fan_candidates": ["Low", "Medium", "High"],
+                            "mode_candidates": ["COOL", "HEAT", "FAN"],
+                            "target_room_temp": 25.0,
+                        }
+                    )
+            else:
+                # Process current month settings for each zone
+                print(
+                    f"[MasterDataLoader] Processing current month settings for each zone"
+                )
+                for _, row in current_month_data.iterrows():
+                    zone_name = row["制御区分"]
+
+                    if zone_name in master_data["zones"]:
+                        # Extract current month settings
+                        master_data["zones"][zone_name].update(
+                            {
+                                "start_time": (
+                                    str(row["始業時間"]).split()[0]
+                                    if pd.notna(row["始業時間"])
+                                    else "07:00"
+                                ),
+                                "end_time": (
+                                    str(row["就業時間"]).split()[0]
+                                    if pd.notna(row["就業時間"])
+                                    else "20:00"
+                                ),
+                                "comfort_min": (
+                                    float(row["目標室内温度下限"])
+                                    if pd.notna(row["目標室内温度下限"])
+                                    else 22.0
+                                ),
+                                "comfort_max": (
+                                    float(row["目標室内温度上限"])
+                                    if pd.notna(row["目標室内温度上限"])
+                                    else 25.0
+                                ),
+                                "setpoint_min": (
+                                    float(row["設定温度下限"])
+                                    if pd.notna(row["設定温度下限"])
+                                    else 22.0
+                                ),
+                                "setpoint_max": (
+                                    float(row["設定温度上限"])
+                                    if pd.notna(row["設定温度上限"])
+                                    else 28.0
+                                ),
+                                "fan_candidates": (
+                                    str(row["風量候補"]).split(",")
+                                    if pd.notna(row["風量候補"])
+                                    else ["Low"]
+                                ),
+                                "mode_candidates": [
+                                    "COOL",
+                                    "HEAT",
+                                    "FAN",
+                                ],  # Default values
+                                "target_room_temp": (
+                                    (
+                                        float(row["目標室内温度下限"])
+                                        + float(row["目標室内温度上限"])
+                                    )
+                                    / 2
+                                    if pd.notna(row["目標室内温度下限"])
+                                    and pd.notna(row["目標室内温度上限"])
+                                    else 25.0
+                                ),
+                            }
+                        )
+                        print(
+                            f"[MasterDataLoader] Added current month settings for {zone_name}"
+                        )
+
+            print(
+                f"[MasterDataLoader] Master data built successfully for current month ({current_month_japanese})"
+            )
             print(f"[MasterDataLoader] Zones: {list(master_data['zones'].keys())}")
 
-            # Print summary for each zone
+            # Print summary
             for zone_name, zone_data in master_data["zones"].items():
-                outdoor_count = len(zone_data["outdoor_units"])
+                outdoor_count = len(zone_data.get("outdoor_units", {}))
                 indoor_count = sum(
-                    len(ou["indoor_units"])
-                    for ou in zone_data["outdoor_units"].values()
+                    len(ou.get("indoor_units", []))
+                    for ou in zone_data.get("outdoor_units", {}).values()
                 )
                 print(
-                    f"[MasterDataLoader] Zone {zone_name}: {outdoor_count} outdoor units, {indoor_count} indoor units"
+                    f"[MasterDataLoader] Zone {zone_name}: {outdoor_count} outdoor units, {indoor_count} indoor units, current month settings"
                 )
 
             return master_data
 
         except Exception as e:
-            print(f"[MasterDataLoader] Error building master data for aggregator: {e}")
+            print(f"[MasterDataLoader] Error building master data: {e}")
             import traceback
 
             traceback.print_exc()

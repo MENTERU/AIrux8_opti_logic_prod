@@ -305,59 +305,50 @@ def run_optimization_for_store(
     enable_preprocessing = execution_mode in ["full", "preprocess"]
     skip_aggregation = execution_mode in ["train", "optimize"]
 
-    optimizer = AirconOptimizer(
-        store_name,
-        enable_preprocessing=enable_preprocessing,
-        skip_aggregation=skip_aggregation,
-    )
-
     # Hardcoded values (not configurable via command line)
     temperature_std_multiplier = 5.0
     power_std_multiplier = 5.0
     weather_api_key = WEATHER_API_KEY
     freq = "1H"  # Default frequency
 
-    # Extract coordinates from Excel file (for preprocessing)
-    coordinates = None
+    # Extract complete Excel master data from consolidated 制御マスタ sheet for current month
+    complete_excel_master_data = None
     try:
         from processing.utilities.master_data_loader import MasterDataLoader
 
         excel_loader = MasterDataLoader(store_name)
-        excel_coordinates = excel_loader.get_coordinates()
+        complete_excel_master_data = excel_loader.get_complete_master_data()
 
-        if excel_coordinates:
-            coordinates = excel_coordinates
-            print(f"[RunOptimization] Using coordinates from Excel file: {coordinates}")
-        else:
-            print(f"[RunOptimization] ERROR: No coordinates found in Excel file")
-            return None
-    except Exception as e:
-        print(f"[RunOptimization] ERROR getting coordinates: {e}")
-        return None
-
-    # Extract Excel master data for aggregator
-    excel_master_data = None
-    try:
-        excel_master_data = excel_loader.get_master_data_for_aggregator()
-
-        if excel_master_data:
-            print(f"[RunOptimization] Using Excel master data for aggregator")
+        if complete_excel_master_data:
             print(
-                f"[RunOptimization] Excel master data zones: {list(excel_master_data.get('zones', {}).keys())}"
+                f"[RunOptimization] Using consolidated Excel master data for current month"
+            )
+            print(
+                f"[RunOptimization] Excel master data zones: {list(complete_excel_master_data.get('zones', {}).keys())}"
+            )
+            print(
+                f"[RunOptimization] Store info: {complete_excel_master_data.get('store_info', {})}"
             )
         else:
-            print(f"[RunOptimization] ERROR: No Excel master data found for aggregator")
+            print(f"[RunOptimization] ERROR: No consolidated Excel master data found")
             return None
     except Exception as e:
-        print(f"[RunOptimization] ERROR getting Excel master data: {e}")
+        print(f"[RunOptimization] ERROR getting consolidated Excel master data: {e}")
         return None
+
+    # Initialize optimizer with consolidated master data
+    optimizer = AirconOptimizer(
+        store_name,
+        enable_preprocessing=enable_preprocessing,
+        skip_aggregation=skip_aggregation,
+        excel_master_data=complete_excel_master_data,
+    )
 
     # 実行モードに応じた処理
     if execution_mode == "preprocess":
         print("📊 前処理のみ実行")
         results = optimizer.run_preprocessing_only(
             weather_api_key=weather_api_key,
-            coordinates=coordinates,
             temperature_std_multiplier=temperature_std_multiplier,
             power_std_multiplier=power_std_multiplier,
         )
@@ -367,8 +358,6 @@ def run_optimization_for_store(
             start_date=start_date,
             end_date=end_date,
             weather_api_key=weather_api_key,
-            coordinates=coordinates,
-            excel_master_data=excel_master_data,
             freq=freq,
         )
     elif execution_mode == "train":
@@ -380,15 +369,12 @@ def run_optimization_for_store(
             start_date=start_date,
             end_date=end_date,
             weather_api_key=weather_api_key,
-            coordinates=coordinates,
             freq=freq,
         )
     else:  # full
         print("🔄 フルパイプライン実行")
         results = optimizer.run(
             weather_api_key=weather_api_key,
-            coordinates=coordinates,
-            excel_master_data=excel_master_data,
             start_date=start_date,
             end_date=end_date,
             freq=freq,
