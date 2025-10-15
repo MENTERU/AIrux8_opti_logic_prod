@@ -121,13 +121,8 @@ class ModelBuilder:
         X_clean = combined[feature_cols].astype(float)
         y_clean = combined[target].astype(float)
 
-        # Preserve the original datetime index
-        if hasattr(df.index, "dtype") and "datetime" in str(df.index.dtype):
-            # Use the index from the cleaned combined dataframe
-            X_clean.index = combined.index
-            y_clean.index = combined.index
-        elif "Datetime" in df.columns:
-            # If Datetime is a column, use it as index
+        # If Datetime is a column (not the index), use it as the index
+        if "Datetime" in df.columns:
             datetime_values = df.loc[combined.index, "Datetime"]
             X_clean.index = pd.to_datetime(datetime_values)
             y_clean.index = pd.to_datetime(datetime_values)
@@ -138,7 +133,7 @@ class ModelBuilder:
     def _train_test_split_with_reset(
         X, y, sample_weights=None, test_size=0.2, random_state=42, shuffle=False
     ):
-        """Perform train_test_split and reset indices to sequential ordering"""
+        """Perform train_test_split while preserving datetime indices"""
         if sample_weights is not None:
             (
                 X_train,
@@ -155,13 +150,6 @@ class ModelBuilder:
                 random_state=random_state,
                 shuffle=shuffle,
             )
-            # Reset indices to ensure sequential ordering
-            X_train = X_train.reset_index(drop=True)
-            X_test = X_test.reset_index(drop=True)
-            y_train = y_train.reset_index(drop=True)
-            y_test = y_test.reset_index(drop=True)
-            sample_weights_train = sample_weights_train.reset_index(drop=True)
-            sample_weights_test = sample_weights_test.reset_index(drop=True)
             return (
                 X_train,
                 X_test,
@@ -174,11 +162,6 @@ class ModelBuilder:
             X_train, X_test, y_train, y_test = train_test_split(
                 X, y, test_size=test_size, random_state=random_state, shuffle=shuffle
             )
-            # Reset indices to ensure sequential ordering
-            X_train = X_train.reset_index(drop=True)
-            X_test = X_test.reset_index(drop=True)
-            y_train = y_train.reset_index(drop=True)
-            y_test = y_test.reset_index(drop=True)
             return X_train, X_test, y_train, y_test
 
     @staticmethod
@@ -191,13 +174,8 @@ class ModelBuilder:
         X_clean = combined[feature_cols].astype(float)
         Y_clean = combined[targets].astype(float)
 
-        # Preserve the original datetime index
-        if hasattr(df.index, "dtype") and "datetime" in str(df.index.dtype):
-            # Use the index from the cleaned combined dataframe
-            X_clean.index = combined.index
-            Y_clean.index = combined.index
-        elif "Datetime" in df.columns:
-            # If Datetime is a column, use it as index
+        # If Datetime is a column (not the index), use it as the index
+        if "Datetime" in df.columns:
             datetime_values = df.loc[combined.index, "Datetime"]
             X_clean.index = pd.to_datetime(datetime_values)
             Y_clean.index = pd.to_datetime(datetime_values)
