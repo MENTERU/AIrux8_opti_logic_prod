@@ -315,8 +315,42 @@ def run_optimization_for_store(
     temperature_std_multiplier = 5.0
     power_std_multiplier = 5.0
     weather_api_key = WEATHER_API_KEY
-    coordinates = None  # Will use master data coordinates
     freq = "1H"  # Default frequency
+
+    # Extract coordinates from Excel file (for preprocessing)
+    coordinates = None
+    try:
+        from processing.utilities.master_data_loader import MasterDataLoader
+
+        excel_loader = MasterDataLoader(store_name)
+        excel_coordinates = excel_loader.get_coordinates()
+
+        if excel_coordinates:
+            coordinates = excel_coordinates
+            print(f"[RunOptimization] Using coordinates from Excel file: {coordinates}")
+        else:
+            print(f"[RunOptimization] ERROR: No coordinates found in Excel file")
+            return None
+    except Exception as e:
+        print(f"[RunOptimization] ERROR getting coordinates: {e}")
+        return None
+
+    # Extract Excel master data for aggregator
+    excel_master_data = None
+    try:
+        excel_master_data = excel_loader.get_master_data_for_aggregator()
+
+        if excel_master_data:
+            print(f"[RunOptimization] Using Excel master data for aggregator")
+            print(
+                f"[RunOptimization] Excel master data zones: {list(excel_master_data.get('zones', {}).keys())}"
+            )
+        else:
+            print(f"[RunOptimization] ERROR: No Excel master data found for aggregator")
+            return None
+    except Exception as e:
+        print(f"[RunOptimization] ERROR getting Excel master data: {e}")
+        return None
 
     # 実行モードに応じた処理
     if execution_mode == "preprocess":
@@ -334,6 +368,7 @@ def run_optimization_for_store(
             end_date=end_date,
             weather_api_key=weather_api_key,
             coordinates=coordinates,
+            excel_master_data=excel_master_data,
             freq=freq,
         )
     elif execution_mode == "train":
@@ -353,6 +388,7 @@ def run_optimization_for_store(
         results = optimizer.run(
             weather_api_key=weather_api_key,
             coordinates=coordinates,
+            excel_master_data=excel_master_data,
             start_date=start_date,
             end_date=end_date,
             freq=freq,

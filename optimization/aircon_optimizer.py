@@ -220,6 +220,7 @@ class AirconOptimizer:
         self,
         weather_api_key: Optional[str] = None,
         coordinates: Optional[str] = None,
+        excel_master_data: Optional[dict] = None,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         freq: str = "1H",
@@ -249,12 +250,10 @@ class AirconOptimizer:
         total_start_time = time.perf_counter()
         processing_times = {}
 
-        # 座標情報をマスタから取得（デフォルト値も設定）
+        # 座標情報の確認
         if coordinates is None:
-            coordinates = self.master.get("store_info", {}).get(
-                "coordinates", "35.681236%2C139.767125"
-            )
-            print(f"[Run] Using coordinates from master: {coordinates}")
+            print(f"[Run] ERROR: No coordinates provided")
+            return None
         else:
             print(f"[Run] Using provided coordinates: {coordinates}")
 
@@ -443,7 +442,12 @@ class AirconOptimizer:
             area_df = self._load_features_directly()
         else:
             print("[Run] Starting area aggregation...")
-            aggregator = AreaAggregator(self.master)
+            # Use Excel-based master data passed from run_optimization
+            if excel_master_data is None:
+                print("[Run] ERROR: Excel master data not provided for aggregator")
+                return None
+
+            aggregator = AreaAggregator(excel_master_data)
             area_df = aggregator.build(
                 ac_processed_data, pm_processed_data, combined_weather_df, freq=freq
             )
@@ -581,11 +585,12 @@ class AirconOptimizer:
 
         print("[Preprocess] 前処理のみ実行開始...")
 
-        # 座標情報をマスタから取得
+        # 座標情報の確認
         if coordinates is None:
-            coordinates = self.master.get("store_info", {}).get(
-                "coordinates", "35.681236%2C139.767125"
-            )
+            print(f"[Preprocess] ERROR: No coordinates provided")
+            return False
+        else:
+            print(f"[Preprocess] Using provided coordinates: {coordinates}")
 
         # 前処理の実行
         preprocessor = DataPreprocessor(self.store_name)
@@ -630,6 +635,7 @@ class AirconOptimizer:
         end_date: Optional[str] = None,
         weather_api_key: Optional[str] = None,
         coordinates: Optional[str] = None,
+        excel_master_data: Optional[dict] = None,
         freq: str = "1H",
     ):
         """
@@ -662,9 +668,7 @@ class AirconOptimizer:
 
         # 座標情報をマスタから取得
         if coordinates is None:
-            coordinates = self.master.get("store_info", {}).get(
-                "coordinates", "35.681236%2C139.767125"
-            )
+            coordinates = self.master.get("store_info", {}).get("coordinates")
 
         # 天候データの取得
         weather_df = None
@@ -696,7 +700,12 @@ class AirconOptimizer:
             combined_weather_df = weather_df
 
         # 集約の実行
-        aggregator = AreaAggregator(self.master)
+        # Use Excel-based master data passed from run_optimization
+        if excel_master_data is None:
+            print("[Aggregate] ERROR: Excel master data not provided for aggregator")
+            return None
+
+        aggregator = AreaAggregator(excel_master_data)
         area_df = aggregator.build(
             ac_processed_data, pm_processed_data, combined_weather_df, freq=freq
         )
@@ -788,9 +797,7 @@ class AirconOptimizer:
 
         # 座標の設定（マスタデータから取得）
         if coordinates is None:
-            coordinates = self.master.get("store_info", {}).get(
-                "coordinates", "35.681236%2C139.767125"
-            )
+            coordinates = self.master.get("store_info", {}).get("coordinates")
 
         # モデルの読み込み
         from training.model_builder import ModelBuilder

@@ -43,13 +43,17 @@ class DataProcessor:
         if "Datetime" in df.columns:
             df["Datetime"] = pd.to_datetime(df["Datetime"])
             datetime_col = "Datetime"
-            # Sort by zone (if exists) and datetime to ensure proper ordering
+            # Sort by zone (if exists) and datetime to ensure proper ordering (newest first)
             if "zone" in df.columns:
-                df = df.sort_values(["zone", "Datetime"])
-                print("[DataProcessor] Sorted data by zone and Datetime")
+                df = df.sort_values(
+                    ["zone", "Datetime"], ascending=[True, False]
+                )  # Zone ascending, Datetime descending (newest first)
+                print("[DataProcessor] Sorted data by zone and Datetime (newest first)")
             else:
-                df = df.sort_values("Datetime")
-                print("[DataProcessor] Sorted data by Datetime")
+                df = df.sort_values(
+                    "Datetime", ascending=False
+                )  # Datetime descending (newest first)
+                print("[DataProcessor] Sorted data by Datetime (newest first)")
         elif "datetime" in df.columns:
             df["datetime"] = pd.to_datetime(df["datetime"])
             datetime_col = "datetime"
