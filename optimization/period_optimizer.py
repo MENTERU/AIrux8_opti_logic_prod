@@ -103,8 +103,8 @@ def optimize_zone_period(
     unit_count = max(unit_count, 1)
 
     # 候補の生成
-    sp_min = int(zone_data.get("setpoint_min", 22))
-    sp_max = int(zone_data.get("setpoint_max", 28))
+    sp_min = float(zone_data.get("setpoint_min"))
+    sp_max = float(zone_data.get("setpoint_max"))
     # Generate temperature candidates with 0.5-degree steps
     sp_list = []
     temp = sp_min
@@ -133,6 +133,7 @@ def optimize_zone_period(
     print(
         f"[PeriodOptimizer] Zone {zone_name}: Business hours {start_time_str}-{end_time_str}, "
         f"Comfort range {comfort_min}-{comfort_max}°C, "
+        f"Set temp range {sp_min:.1f}-{sp_max:.1f}°C, "
         f"candidates={len(sp_list)}×{len(mode_list)}×{len(fan_list)}"
     )
     print(
