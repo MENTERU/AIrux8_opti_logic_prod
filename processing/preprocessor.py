@@ -11,6 +11,8 @@ from processing.utilities.category_mapping_loader import (
 )
 from processing.utilities.weatherapi_client import VisualCrossingWeatherAPIDataFetcher
 
+from processing.temp_range_export import update_master_from_analysis
+
 
 # =============================
 # STEP1: 前処理
@@ -414,16 +416,9 @@ class DataPreprocessor:
                 encoding="utf-8-sig",
             )
 
-         # 自動Excel出力処理 (AC_setvalue_range_analysis_*.xlsx)
         try:
-            from processing.temp_range_export import export_temp_range_stats
-
-            print("[DataPreprocessor] 自動Excel出力を開始します...")
-            export_temp_range_stats(
-                ac_df=ac_control_data,
-                store_name=self.store_name,
-                output_dir=self.output_dir
-            )
+            print("\n[DataPreprocessor] MASTER update process starting... / MASTER更新処理を開始します...")
+            update_master_from_analysis(store_name=self.store_name, processed_dir=self.output_dir)
+            print("[DataPreprocessor] MASTER update completed successfully. / MASTER更新が正常に完了しました。")
         except Exception as e:
-            print(f"[DataPreprocessor] Failed to export monthly range Excel: {e}")
-
+            print(f"[DataPreprocessor] MASTER update failed: {e} / MASTERファイルの更新に失敗しました。")
