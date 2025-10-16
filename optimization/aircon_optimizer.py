@@ -38,7 +38,6 @@ from planning.planner import Planner
 from processing.aggregator import AreaAggregator
 from processing.preprocessor import DataPreprocessor
 from processing.utilities.helper_functions import analyze_feature_correlations
-from processing.utilities.master_loader import MasterLoader
 from processing.utilities.weatherapi_client import VisualCrossingWeatherAPIDataFetcher
 from training.data_processor import DataProcessor
 from training.model_builder import ModelBuilder
@@ -68,8 +67,7 @@ class AirconOptimizer:
                 f"[AirconOptimizer] Using consolidated Excel master data for {store_name}"
             )
         else:
-            self.master = MasterLoader(store_name).load()
-            print(f"[AirconOptimizer] Using JSON master data for {store_name}")
+            print(f"[AirconOptimizer] No Excel master data provided for {store_name}")
 
         from config.utils import get_data_path
 
