@@ -27,22 +27,35 @@ class MasterDataLoader:
         try:
             print(f"[MasterDataLoader] Excelファイルを読み込み中: {excel_path}")
 
-            # Read the MASTER sheet
-            master_df = pd.read_excel(excel_path, sheet_name="MASTER")
+            # Read the 施設情報 sheet
+            facility_info_df = pd.read_excel(excel_path, sheet_name="施設情報")
             print(
-                f"[MasterDataLoader] Excel MASTER sheet読み込み成功: shape={master_df.shape}"
+                f"[MasterDataLoader] Excel 施設情報 sheet読み込み成功: shape={facility_info_df.shape}"
             )
-            print(f"[MasterDataLoader] Excel columns: {list(master_df.columns)}")
+            print(f"[MasterDataLoader] Excel columns: {list(facility_info_df.columns)}")
 
-            # Extract coordinates from Excel file
+            # Extract coordinates from 施設情報 sheet
             coordinates = None
-            if "座標" in master_df.columns:
-                coordinates = str(
-                    master_df.iloc[0]["座標"]
-                )  # 現在座標はすべてのエリア共通
-                print(f"[MasterDataLoader] Coordinates from Excel: {coordinates}")
+            if (
+                "施設情報" in facility_info_df.columns
+                and "値" in facility_info_df.columns
+            ):
+                # Find the row where 施設情報 contains "施設座標"
+                coord_row = facility_info_df[facility_info_df["施設情報"] == "施設座標"]
+                if not coord_row.empty:
+                    coordinates = str(coord_row.iloc[0]["値"])
+                    print(
+                        f"[MasterDataLoader] Coordinates from 施設情報 sheet: {coordinates}"
+                    )
+                else:
+                    print(
+                        f"[MasterDataLoader] 施設座標 row not found in 施設情報 sheet"
+                    )
+                    return None
             else:
-                print(f"[MasterDataLoader] Coordinates column not found")
+                print(
+                    f"[MasterDataLoader] Required columns not found in 施設情報 sheet"
+                )
                 return None
             return coordinates
 
