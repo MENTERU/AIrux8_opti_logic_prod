@@ -103,8 +103,8 @@ def optimize_zone_period(
     unit_count = max(unit_count, 1)
 
     # 候補の生成
-    sp_min = int(zone_data.get("setpoint_min", 22))
-    sp_max = int(zone_data.get("setpoint_max", 28))
+    sp_min = float(zone_data.get("setpoint_min"))
+    sp_max = float(zone_data.get("setpoint_max"))
     # Generate temperature candidates with 0.5-degree steps
     sp_list = []
     temp = sp_min
@@ -133,7 +133,11 @@ def optimize_zone_period(
     print(
         f"[PeriodOptimizer] Zone {zone_name}: Business hours {start_time_str}-{end_time_str}, "
         f"Comfort range {comfort_min}-{comfort_max}°C, "
+        f"Set temp range {sp_min:.1f}-{sp_max:.1f}°C, "
         f"candidates={len(sp_list)}×{len(mode_list)}×{len(fan_list)}"
+    )
+    print(
+        f"[PeriodOptimizer] Zone {zone_name}: Fan options from 制御マスタ = {fan_candidates} → Normalized = {fan_list}"
     )
 
     # 天候データの準備
@@ -169,14 +173,24 @@ def optimize_zone_period(
 
     # 各時刻で最適化
     for timestamp in date_range:
-        # Check if current time is within business hours
+        # Check if current hour overlaps with business hours
+        # Business hours logic: If the hour contains any part of business hours, optimize for that hour
         current_hour = timestamp.hour
         current_minute = timestamp.minute
         current_time_minutes = current_hour * 60 + current_minute
         start_time_minutes = start_h * 60 + start_m
         end_time_minutes = end_h * 60 + end_m
 
-        is_biz = start_time_minutes <= current_time_minutes <= end_time_minutes
+        # Hour boundaries: current hour starts at current_hour:00 and ends at (current_hour+1):00
+        hour_start_minutes = current_hour * 60
+        hour_end_minutes = (current_hour + 1) * 60
+
+        # Check if this hour overlaps with business hours
+        # Hour overlaps if: hour_start < business_end AND hour_end > business_start
+        is_biz = (
+            hour_start_minutes < end_time_minutes
+            and hour_end_minutes > start_time_minutes
+        )
 
         weather = weather_dict.get(
             timestamp,
@@ -374,7 +388,8 @@ def optimize_zone_period(
     business_hours_count = sum(
         1
         for ts in date_range
-        if start_time_minutes <= (ts.hour * 60 + ts.minute) <= end_time_minutes
+        if (ts.hour * 60) < end_time_minutes
+        and ((ts.hour + 1) * 60) > start_time_minutes
     )
     print(
         f"[PeriodOptimizer] Zone {zone_name} completed - "
