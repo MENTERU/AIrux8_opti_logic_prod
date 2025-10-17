@@ -362,9 +362,9 @@ class AirconOptimizer:
 
         # 最適化期間の既定
         if start_date is None or end_date is None:
-            today = pd.Timestamp.today().normalize()
-            start_date = today.strftime("%Y-%m-%d")
-            end_date = (today + pd.Timedelta(days=3)).strftime("%Y-%m-%d")
+            tomorrow = pd.Timestamp.today().normalize() + pd.Timedelta(days=1)
+            start_date = tomorrow.strftime("%Y-%m-%d")
+            end_date = (tomorrow + pd.Timedelta(days=3)).strftime("%Y-%m-%d")
 
         # 実績期間と最適化期間を統合した取得レンジ
         combined_start_dt = pd.to_datetime(start_date)
@@ -816,9 +816,9 @@ class AirconOptimizer:
 
         # 日付の設定
         if start_date is None or end_date is None:
-            today = pd.Timestamp.today().normalize()
-            start_date = today.strftime("%Y-%m-%d")
-            end_date = (today + pd.Timedelta(days=3)).strftime("%Y-%m-%d")
+            tomorrow = pd.Timestamp.today().normalize() + pd.Timedelta(days=1)
+            start_date = tomorrow.strftime("%Y-%m-%d")
+            end_date = (tomorrow + pd.Timedelta(days=3)).strftime("%Y-%m-%d")
 
         # 座標の設定（マスタデータから取得）
         if coordinates is None:
