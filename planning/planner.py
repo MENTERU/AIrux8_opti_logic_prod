@@ -197,10 +197,10 @@ class Planner:
                 rec[f"{z}_PredPower"] = (
                     round(float(s.get("pred_power", 0.0)), 2) if s else 0.0
                 )
-                if s and s.get("pred_temp") is not None and s.get("pred_temp") != 0.0:
+                if s and s.get("pred_temp") is not None:
                     rec[f"{z}_PredTemp"] = round(float(s.get("pred_temp")), 2)
                 else:
-                    rec[f"{z}_PredTemp"] = 0.0  # 0.0 for non-business hours
+                    rec[f"{z}_PredTemp"] = 0.0  # 0.0 if no prediction available
             rows.append(rec)
         ctrl_df = pd.DataFrame(rows)
         ctrl_path = os.path.join(out_dir, f"control_type_schedule_{date_str}.csv")
