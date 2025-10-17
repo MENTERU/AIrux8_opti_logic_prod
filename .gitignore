@@ -229,3 +229,4 @@ validation_plots.html
 logs/
 analysis/output/
 visualization/
+.cursor/
