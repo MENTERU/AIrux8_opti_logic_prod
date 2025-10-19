@@ -121,18 +121,48 @@ class ModelBuilder:
         X_clean = combined[feature_cols].astype(float)
         y_clean = combined[target].astype(float)
 
-        # Preserve the original datetime index
-        if hasattr(df.index, "dtype") and "datetime" in str(df.index.dtype):
-            # Use the index from the cleaned combined dataframe
-            X_clean.index = combined.index
-            y_clean.index = combined.index
-        elif "Datetime" in df.columns:
-            # If Datetime is a column, use it as index
+        # If Datetime is a column (not the index), use it as the index
+        if "Datetime" in df.columns:
             datetime_values = df.loc[combined.index, "Datetime"]
             X_clean.index = pd.to_datetime(datetime_values)
             y_clean.index = pd.to_datetime(datetime_values)
 
         return X_clean, y_clean
+
+    @staticmethod
+    def _train_test_split_with_reset(
+        X, y, sample_weights=None, test_size=0.2, random_state=42, shuffle=False
+    ):
+        """Perform train_test_split while preserving datetime indices"""
+        if sample_weights is not None:
+            (
+                X_train,
+                X_test,
+                y_train,
+                y_test,
+                sample_weights_train,
+                sample_weights_test,
+            ) = train_test_split(
+                X,
+                y,
+                sample_weights,
+                test_size=test_size,
+                random_state=random_state,
+                shuffle=shuffle,
+            )
+            return (
+                X_train,
+                X_test,
+                y_train,
+                y_test,
+                sample_weights_train,
+                sample_weights_test,
+            )
+        else:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=test_size, random_state=random_state, shuffle=shuffle
+            )
+            return X_train, X_test, y_train, y_test
 
     @staticmethod
     def _split_multi(df: pd.DataFrame, targets: List[str], feature_cols: List[str]):
@@ -144,43 +174,16 @@ class ModelBuilder:
         X_clean = combined[feature_cols].astype(float)
         Y_clean = combined[targets].astype(float)
 
-        # Preserve the original datetime index
-        if hasattr(df.index, "dtype") and "datetime" in str(df.index.dtype):
-            # Use the index from the cleaned combined dataframe
-            X_clean.index = combined.index
-            Y_clean.index = combined.index
-        elif "Datetime" in df.columns:
-            # If Datetime is a column, use it as index
+        # If Datetime is a column (not the index), use it as the index
+        if "Datetime" in df.columns:
             datetime_values = df.loc[combined.index, "Datetime"]
             X_clean.index = pd.to_datetime(datetime_values)
             Y_clean.index = pd.to_datetime(datetime_values)
 
         return X_clean, Y_clean
 
-    @staticmethod
-    def _compute_additional_features(df: pd.DataFrame) -> pd.DataFrame:
-        """追加特徴量を作成（ON連続長, Hour×DayOfWeek など）"""
-        out = df.copy()
-        # HourOfWeek = DayOfWeek*24 + Hour
-        if all(c in out.columns for c in ["DayOfWeek", "Hour"]):
-            out["HourOfWeek"] = out["DayOfWeek"] * 24 + out["Hour"]
-        # ON/OFF連続長（A/C ON/OFFが存在する場合）
-        if "A/C ON/OFF" in out.columns and "Datetime" in out.columns:
-            out = out.sort_values("Datetime")
-            onoff = out["A/C ON/OFF"].fillna(0).astype(int).values
-            run = 0
-            runs = []
-            for v in onoff:
-                if v > 0:
-                    run += 1
-                else:
-                    run = 0
-                runs.append(run)
-            out["OnRunLength"] = runs
-        return out
-
     def train_by_zone(
-        self, area_df: pd.DataFrame, master: dict
+        self, area_df: pd.DataFrame
     ) -> Dict[str, EnvPowerModels]:
         print(
             f"[ModelBuilder] Starting train_by_zone. "
@@ -194,8 +197,6 @@ class ModelBuilder:
         print(f"[ModelBuilder] Found zones: {zones}")
         for z in zones:
             sub = area_df[area_df["zone"] == z].copy()
-            if "Datetime" in sub.columns:
-                sub = self._compute_additional_features(sub)
             print(f"[ModelBuilder] Zone {z}: {len(sub)} records")
             if len(sub) < 20:
                 print(
@@ -212,8 +213,6 @@ class ModelBuilder:
                 critical_features = [
                     "A/C Fan Speed",
                     "A/C Status",  # Combined ON/OFF and Mode
-                    # "A/C Mode",  # Now using A/C Status
-                    # "A/C ON/OFF",  # Now using A/C Status
                     "A/C Set Temperature",
                 ]
                 temp_feats = [
@@ -234,13 +233,13 @@ class ModelBuilder:
                     f"[ModelBuilder] Zone {z}: Skipped (insufficient temp samples after dropping NaNs: {len(X_t)} < 5)"
                 )
                 continue
-            Xtr, Xte, ytr, yte = train_test_split(
+            Xtr, Xte, ytr, yte = self._train_test_split_with_reset(
                 X_t, y_t, test_size=0.2, random_state=42, shuffle=False
             )
 
-            # Print train/test date ranges
+            # Print train/test sample counts
             print(
-                f"[ModelBuilder] Zone {z} - Train: {pd.to_datetime(Xtr.index.min())} to {pd.to_datetime(Xtr.index.max())} | Test: {pd.to_datetime(Xte.index.min())} to {pd.to_datetime(Xte.index.max())}"
+                f"[ModelBuilder] Zone {z} - Train samples: {len(Xtr)} | Test samples: {len(Xte)}"
             )
             temp_model = Pipeline(
                 steps=[
@@ -264,13 +263,13 @@ class ModelBuilder:
             hum_model = None
             if "室内湿度" in sub.columns and sub["室内湿度"].notna().sum() > 10:
                 X_h, y_h = self._split_xy(sub, "室内湿度", temp_feats)
-                Xtrh, Xteh, ytrh, yteh = train_test_split(
+                Xtrh, Xteh, ytrh, yteh = self._train_test_split_with_reset(
                     X_h, y_h, test_size=0.2, random_state=42, shuffle=False
                 )
 
-                # Print humidity train/test date ranges
+                # Print humidity train/test sample counts
                 print(
-                    f"[ModelBuilder] Zone {z} - Humidity Train: {pd.to_datetime(Xtrh.index.min())} to {pd.to_datetime(Xtrh.index.max())} | Test: {pd.to_datetime(Xteh.index.min())} to {pd.to_datetime(Xteh.index.max())}"
+                    f"[ModelBuilder] Zone {z} - Humidity Train samples: {len(Xtrh)} | Test samples: {len(Xteh)}"
                 )
                 hum_model = Pipeline(
                     steps=[
@@ -318,10 +317,15 @@ class ModelBuilder:
                 critical_features = [
                     "A/C Fan Speed",
                     "A/C Status",  # Combined ON/OFF and Mode
-                    # "A/C Mode",  # Now using A/C Status
-                    # "A/C ON/OFF",  # Now using A/C Status
                     "A/C Set Temperature",
                 ]
+
+                # Debug: Print non-null ratios for critical features
+                print(f"[ModelBuilder] Zone {z}: Critical feature non-null ratios:")
+                for feat in critical_features:
+                    if feat in nonnull_ratio:
+                        print(f"  - {feat}: {nonnull_ratio[feat]:.3f}")
+
                 power_feats = [
                     c
                     for c in power_feats
@@ -364,23 +368,23 @@ class ModelBuilder:
                 except Exception:
                     sample_weight_series = None
             if sample_weight_series is not None:
-                Xtrp, Xtep, ytrp, ytep, wtrp, wtep = train_test_split(
+                Xtrp, Xtep, ytrp, ytep, wtrp, wtep = self._train_test_split_with_reset(
                     X_p,
                     y_p,
-                    sample_weight_series,
+                    sample_weights=sample_weight_series,
                     test_size=0.2,
                     random_state=42,
                     shuffle=False,
                 )
             else:
-                Xtrp, Xtep, ytrp, ytep = train_test_split(
+                Xtrp, Xtep, ytrp, ytep = self._train_test_split_with_reset(
                     X_p, y_p, test_size=0.2, random_state=42, shuffle=False
                 )
                 wtrp = None
 
-            # Print power train/test date ranges
+            # Print power train/test sample counts
             print(
-                f"[ModelBuilder] Zone {z} - Power Train: {pd.to_datetime(Xtrp.index.min())} to {pd.to_datetime(Xtrp.index.max())} | Test: {pd.to_datetime(Xtep.index.min())} to {pd.to_datetime(Xtep.index.max())}"
+                f"[ModelBuilder] Zone {z} - Power Train samples: {len(Xtrp)} | Test samples: {len(Xtep)}"
             )
             # Remove MinMaxScaler - it's causing constant predictions
             power_model = XGBRegressor(
@@ -414,13 +418,13 @@ class ModelBuilder:
                 if all(t in sub.columns for t in multi_targets):
                     Xm, Ym = self._split_multi(sub, multi_targets, temp_feats)
                     if len(Xm) >= 20:
-                        Xm_tr, Xm_te, Ym_tr, Ym_te = train_test_split(
+                        Xm_tr, Xm_te, Ym_tr, Ym_te = self._train_test_split_with_reset(
                             Xm, Ym, test_size=0.2, random_state=42, shuffle=False
                         )
 
-                        # Print multi-output train/test date ranges
+                        # Print multi-output train/test sample counts
                         print(
-                            f"[ModelBuilder] Zone {z} - Multi-output Train: {pd.to_datetime(Xm_tr.index.min())} to {pd.to_datetime(Xm_tr.index.max())} | Test: {pd.to_datetime(Xm_te.index.min())} to {pd.to_datetime(Xm_te.index.max())}"
+                            f"[ModelBuilder] Zone {z} - Multi-output Train samples: {len(Xm_tr)} | Test samples: {len(Xm_te)}"
                         )
                         # Remove MinMaxScaler - XGBoost handles features internally
                         base_xgb = XGBRegressor(
@@ -596,9 +600,33 @@ class ModelBuilder:
 
             model_pack = models[zone]
 
-            # Prepare features for prediction
-            temp_feats = [c for c in TEMP_FEATURE_COLS if c in zone_data.columns]
-            power_feats = [c for c in POWER_FEATURE_COLS if c in zone_data.columns]
+            # Note: Additional features (HourOfWeek, OnRunLength) are now computed in DataProcessor
+            # before data reaches ModelBuilder, so no need to compute them here
+
+            # Prepare features for prediction - use the same features that were used during training
+            temp_feats = model_pack.feature_cols  # Use the exact features from training
+
+            # For power model, we need to determine what features were actually used during training
+            # Since the power model is separate from temp model, we need to check what features it expects
+            if hasattr(model_pack.power_model, "feature_names_in_"):
+                # XGBoost model has feature_names_in_ attribute
+                power_feats = list(model_pack.power_model.feature_names_in_)
+                print(
+                    f"[ModelBuilder] Using power model's actual feature names: {power_feats}"
+                )
+            else:
+                # Fallback: use POWER_FEATURE_COLS but filter by availability
+                power_feats = [c for c in POWER_FEATURE_COLS if c in zone_data.columns]
+                print(
+                    f"[ModelBuilder] Using POWER_FEATURE_COLS fallback: {power_feats}"
+                )
+
+            # Debug: Print available features
+            print(
+                f"[ModelBuilder] Available columns for {zone}: {list(zone_data.columns)}"
+            )
+            print(f"[ModelBuilder] Temp features for {zone}: {temp_feats}")
+            print(f"[ModelBuilder] Power features for {zone}: {power_feats}")
 
             # Create results dataframe starting with input features
             results_df = zone_data.copy()
@@ -606,11 +634,38 @@ class ModelBuilder:
             # Add temperature predictions
             if model_pack.temp_model is not None and len(temp_feats) > 0:
                 try:
-                    # Filter features and handle missing values
-                    X_temp = zone_data[temp_feats].fillna(0)
-                    temp_pred = model_pack.temp_model.predict(X_temp)
-                    results_df[f"{zone}_temp_pred"] = temp_pred
-                    print(f"[ModelBuilder] Added temperature predictions for {zone}")
+                    # Check if all required features are available
+                    missing_temp_feats = [
+                        f for f in temp_feats if f not in zone_data.columns
+                    ]
+                    if missing_temp_feats:
+                        print(
+                            f"[ModelBuilder] Missing temp features for {zone}: {missing_temp_feats}"
+                        )
+                        # Use only available features
+                        available_temp_feats = [
+                            f for f in temp_feats if f in zone_data.columns
+                        ]
+                        if len(available_temp_feats) < 5:
+                            print(
+                                f"[ModelBuilder] Insufficient temp features for {zone}, skipping..."
+                            )
+                            results_df[f"{zone}_temp_pred"] = np.nan
+                        else:
+                            X_temp = zone_data[available_temp_feats].fillna(0)
+                            temp_pred = model_pack.temp_model.predict(X_temp)
+                            results_df[f"{zone}_temp_pred"] = temp_pred
+                            print(
+                                f"[ModelBuilder] Added temperature predictions for {zone} with {len(available_temp_feats)} features"
+                            )
+                    else:
+                        # All features available
+                        X_temp = zone_data[temp_feats].fillna(0)
+                        temp_pred = model_pack.temp_model.predict(X_temp)
+                        results_df[f"{zone}_temp_pred"] = temp_pred
+                        print(
+                            f"[ModelBuilder] Added temperature predictions for {zone}"
+                        )
                 except Exception as e:
                     print(
                         f"[ModelBuilder] Temperature prediction failed for {zone}: {e}"
@@ -620,9 +675,30 @@ class ModelBuilder:
             # Add power predictions
             if model_pack.power_model is not None and len(power_feats) > 0:
                 try:
-                    # Filter features and handle missing values
-                    X_power = zone_data[power_feats].fillna(0)
-                    power_pred = model_pack.power_model.predict(X_power)
+                    # Check if all required features are available
+                    missing_power_feats = [
+                        f for f in power_feats if f not in zone_data.columns
+                    ]
+                    if missing_power_feats:
+                        print(
+                            f"[ModelBuilder] Missing power features for {zone}: {missing_power_feats}"
+                        )
+                        # Use only available features
+                        available_power_feats = [
+                            f for f in power_feats if f in zone_data.columns
+                        ]
+                        if len(available_power_feats) < 5:
+                            print(
+                                f"[ModelBuilder] Insufficient power features for {zone}, skipping..."
+                            )
+                            results_df[f"{zone}_power_pred"] = np.nan
+                        else:
+                            X_power = zone_data[available_power_feats].fillna(0)
+                            power_pred = model_pack.power_model.predict(X_power)
+                    else:
+                        # All features available
+                        X_power = zone_data[power_feats].fillna(0)
+                        power_pred = model_pack.power_model.predict(X_power)
 
                     # Clip negative predictions to 0 (power cannot be negative)
                     power_pred = np.clip(power_pred, 0.0, None)

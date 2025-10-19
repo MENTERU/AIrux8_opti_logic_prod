@@ -38,13 +38,32 @@ class DataProcessor:
         """
         df = df.copy()
 
-        # Ensure Datetime column exists and is properly formatted
+        # CRITICAL: Sort data by datetime and zone before creating any features
+        # This ensures proper time-series ordering for lag features and other time-dependent calculations
         if "Datetime" in df.columns:
             df["Datetime"] = pd.to_datetime(df["Datetime"])
             datetime_col = "Datetime"
+            # Sort by zone (if exists) and datetime to ensure proper ordering (newest first)
+            if "zone" in df.columns:
+                df = df.sort_values(
+                    ["zone", "Datetime"], ascending=[True, False]
+                )  # Zone ascending, Datetime descending (newest first)
+                print("[DataProcessor] Sorted data by zone and Datetime (newest first)")
+            else:
+                df = df.sort_values(
+                    "Datetime", ascending=False
+                )  # Datetime descending (newest first)
+                print("[DataProcessor] Sorted data by Datetime (newest first)")
         elif "datetime" in df.columns:
             df["datetime"] = pd.to_datetime(df["datetime"])
             datetime_col = "datetime"
+            # Sort by zone (if exists) and datetime to ensure proper ordering
+            if "zone" in df.columns:
+                df = df.sort_values(["zone", "datetime"])
+                print("[DataProcessor] Sorted data by zone and datetime")
+            else:
+                df = df.sort_values("datetime")
+                print("[DataProcessor] Sorted data by datetime")
         else:
             print(
                 "[DataProcessor] Warning: No datetime column found. Using index as datetime."
@@ -124,45 +143,57 @@ class DataProcessor:
         df["n_week"] = df.index.isocalendar().week
         print("[DataProcessor] Added week number feature")
 
-        # HourOfWeek feature (from model_builder.py)
-        df["HourOfWeek"] = df.index.weekday * 24 + df.index.hour
-        print("[DataProcessor] Added HourOfWeek feature")
+        # HourOfWeek feature (moved from model_builder.py)
+        # Use existing DayOfWeek and Hour columns if available, otherwise use index
+        if "DayOfWeek" in df.columns and "Hour" in df.columns:
+            df["HourOfWeek"] = df["DayOfWeek"] * 24 + df["Hour"]
+            print(
+                "[DataProcessor] Added HourOfWeek feature using DayOfWeek and Hour columns"
+            )
+        else:
+            # Fallback to using index if columns not available
+            df["HourOfWeek"] = df.index.weekday * 24 + df.index.hour
+            print("[DataProcessor] Added HourOfWeek feature using datetime index")
 
-        # OnRunLength feature (from model_builder.py) - cumulative run length when AC is ON
+        # OnRunLength feature (moved from model_builder.py) - cumulative run length when AC is ON
         if "A/C ON/OFF" in df.columns:
-            df["OnRunLength"] = 0
-            for zone in df["zone"].unique() if "zone" in df.columns else [None]:
-                if zone is not None:
+            # Process by zone if zone column exists, otherwise process entire dataset
+            if "zone" in df.columns:
+                df["OnRunLength"] = 0
+                for zone in df["zone"].unique():
                     zone_mask = df["zone"] == zone
                     zone_data = df.loc[zone_mask, "A/C ON/OFF"].fillna(0).astype(int)
                     run_length = 0
                     on_run_values = []
                     for is_on in zone_data:
-                        if is_on == 1:
+                        if is_on > 0:  # AC is ON
                             run_length += 1
-                        else:
+                        else:  # AC is OFF
                             run_length = 0
                         on_run_values.append(run_length)
                     df.loc[zone_mask, "OnRunLength"] = on_run_values
-                else:
-                    # No zone column, process entire dataset
-                    zone_data = df["A/C ON/OFF"].fillna(0).astype(int)
-                    run_length = 0
-                    on_run_values = []
-                    for is_on in zone_data:
-                        if is_on == 1:
-                            run_length += 1
-                        else:
-                            run_length = 0
-                        on_run_values.append(run_length)
-                    df["OnRunLength"] = on_run_values
-            print("[DataProcessor] Added OnRunLength feature")
+                print("[DataProcessor] Added OnRunLength feature (processed by zone)")
+            else:
+                # No zone column, process entire dataset
+                zone_data = df["A/C ON/OFF"].fillna(0).astype(int)
+                run_length = 0
+                on_run_values = []
+                for is_on in zone_data:
+                    if is_on > 0:  # AC is ON
+                        run_length += 1
+                    else:  # AC is OFF
+                        run_length = 0
+                    on_run_values.append(run_length)
+                df["OnRunLength"] = on_run_values
+                print(
+                    "[DataProcessor] Added OnRunLength feature (processed entire dataset)"
+                )
         else:
             print(
                 "[DataProcessor] Warning: A/C ON/OFF not found, skipping OnRunLength feature"
             )
 
-        # 4. Lag features
+        # 4. Lag features (now properly sorted by zone and datetime)
         lag_columns = ["Outdoor Temp.", "Outdoor Humidity", "adjusted_power"]
         lag_periods = [1, 24]
 
@@ -170,12 +201,20 @@ class DataProcessor:
             if col in df.columns:
                 for lag in lag_periods:
                     lag_col_name = f"{col} lag{lag}"
-                    df[lag_col_name] = df[col].shift(lag)
-                    print(f"[DataProcessor] Added {lag_col_name} feature")
+                    if "zone" in df.columns:
+                        # Calculate lag within each zone to ensure proper time-series ordering
+                        df[lag_col_name] = df.groupby("zone")[col].shift(lag)
+                        print(
+                            f"[DataProcessor] Added {lag_col_name} feature (grouped by zone)"
+                        )
+                    else:
+                        # No zone column, calculate lag for entire dataset
+                        df[lag_col_name] = df[col].shift(lag)
+                        print(f"[DataProcessor] Added {lag_col_name} feature")
             else:
                 print(f"[DataProcessor] Warning: {col} not found for lag features")
 
-        # 5. Rolling window features
+        # 5. Rolling window features (now properly sorted by zone and datetime)
         rolling_columns = ["Outdoor Temp.", "Outdoor Humidity", "adjusted_power"]
         rolling_windows = [3, 24]
 
@@ -183,8 +222,21 @@ class DataProcessor:
             if col in df.columns:
                 for window in rolling_windows:
                     rolling_col_name = f"{col} rolling_mean{window}"
-                    df[rolling_col_name] = df[col].rolling(window=window).mean()
-                    print(f"[DataProcessor] Added {rolling_col_name} feature")
+                    if "zone" in df.columns:
+                        # Calculate rolling mean within each zone to ensure proper time-series ordering
+                        df[rolling_col_name] = (
+                            df.groupby("zone")[col]
+                            .rolling(window=window)
+                            .mean()
+                            .reset_index(level=0, drop=True)
+                        )
+                        print(
+                            f"[DataProcessor] Added {rolling_col_name} feature (grouped by zone)"
+                        )
+                    else:
+                        # No zone column, calculate rolling mean for entire dataset
+                        df[rolling_col_name] = df[col].rolling(window=window).mean()
+                        print(f"[DataProcessor] Added {rolling_col_name} feature")
             else:
                 print(f"[DataProcessor] Warning: {col} not found for rolling features")
 
@@ -257,7 +309,7 @@ class DataProcessor:
         processed_df = self._preprocess_features(area_df)
 
         print(
-            f"[DataProcessor] Feature processing completed. Output shape: {processed_df.shape}"
+            f"[DataProcessor] Feature processing completed. Ou shape: {processed_df.shape}"
         )
 
         # Print summary of new features added

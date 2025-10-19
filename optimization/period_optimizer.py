@@ -103,8 +103,8 @@ def optimize_zone_period(
     unit_count = max(unit_count, 1)
 
     # 候補の生成
-    sp_min = int(zone_data.get("setpoint_min", 22))
-    sp_max = int(zone_data.get("setpoint_max", 28))
+    sp_min = float(zone_data.get("setpoint_min"))
+    sp_max = float(zone_data.get("setpoint_max"))
     # Generate temperature candidates with 0.5-degree steps
     sp_list = []
     temp = sp_min
@@ -133,7 +133,11 @@ def optimize_zone_period(
     print(
         f"[PeriodOptimizer] Zone {zone_name}: Business hours {start_time_str}-{end_time_str}, "
         f"Comfort range {comfort_min}-{comfort_max}°C, "
+        f"Set temp range {sp_min:.1f}-{sp_max:.1f}°C, "
         f"candidates={len(sp_list)}×{len(mode_list)}×{len(fan_list)}"
+    )
+    print(
+        f"[PeriodOptimizer] Zone {zone_name}: Fan options from 制御マスタ = {fan_candidates} → Normalized = {fan_list}"
     )
 
     # 天候データの準備
@@ -174,14 +178,24 @@ def optimize_zone_period(
 
     # 各時刻で最適化
     for timestamp in date_range:
-        # Check if current time is within business hours
+        # Check if current hour overlaps with business hours
+        # Business hours logic: If the hour contains any part of business hours, optimize for that hour
         current_hour = timestamp.hour
         current_minute = timestamp.minute
         current_time_minutes = current_hour * 60 + current_minute
         start_time_minutes = start_h * 60 + start_m
         end_time_minutes = end_h * 60 + end_m
 
-        is_biz = start_time_minutes <= current_time_minutes <= end_time_minutes
+        # Hour boundaries: current hour starts at current_hour:00 and ends at (current_hour+1):00
+        hour_start_minutes = current_hour * 60
+        hour_end_minutes = (current_hour + 1) * 60
+
+        # Check if this hour overlaps with business hours
+        # Hour overlaps if: hour_start < business_end AND hour_end > business_start
+        is_biz = (
+            hour_start_minutes < end_time_minutes
+            and hour_end_minutes > start_time_minutes
+        )
 
         weather = weather_dict.get(
             timestamp,
@@ -193,14 +207,16 @@ def optimize_zone_period(
         )
 
         if not is_biz:
-            # Non-business hours: Set mode to OFF with consistent 22°C set temperature
-            best_combination = {
-                "set_temp": 22.0,  # Consistent set temperature for non-business hours
-                "mode": "OFF",
-                "fan": "LOW",  # Default fan speed for OFF mode
-                "pred_temp": last_temp,  # Temperature remains the same when OFF
-                "pred_power": 0.0,  # No power consumption when OFF
-                "outside_temp": weather["outdoor_temp"],
+            # Non-business hours: Only set essential fields, others remain empty
+            best_combination =             {
+                "set_temp": None,  # No set temperature needed outside business hours
+                "mode": None,  # No mode setting needed outside business hours
+                "fan": None,  # No fan setting needed outside business hours
+                "pred_temp": 0.0,  # No temperature prediction needed outside business hours
+                "pred_power": 0.0,  # No power consumption when OFF (needed for power calculation)
+                "outside_temp": weather[
+                    "outdoor_temp"
+                ],  # Weather data needed for context
             }
         else:
             # Business hours: Run full optimization
@@ -359,20 +375,26 @@ def optimize_zone_period(
 
         # スケジュールに追加
         schedule[timestamp] = best_combination
-        last_temp = best_combination["pred_temp"]
-        last_set_temp = best_combination[
-            "set_temp"
-        ]  # Track set temperature for next hour
-        last_mode = best_combination[
-            "mode"
-        ]  # Track mode for next hour's transition constraints
+
+        # Track values for next hour (only if not None/0.0)
+        if (
+            best_combination["pred_temp"] is not None
+            and best_combination["pred_temp"] != 0.0
+        ):
+            last_temp = best_combination["pred_temp"]
+        if best_combination["set_temp"] is not None:
+            last_set_temp = best_combination["set_temp"]
+        if best_combination["mode"] is not None:
+            last_mode = best_combination["mode"]
+
         total_power += best_combination["pred_power"]
 
     # 結果の表示
     business_hours_count = sum(
         1
         for ts in date_range
-        if start_time_minutes <= (ts.hour * 60 + ts.minute) <= end_time_minutes
+        if (ts.hour * 60) < end_time_minutes
+        and ((ts.hour + 1) * 60) > start_time_minutes
     )
     print(
         f"[PeriodOptimizer] Zone {zone_name} completed - "
@@ -410,6 +432,7 @@ class PeriodOptimizer:
         weather_df: pd.DataFrame,
     ) -> Dict[str, Dict[pd.Timestamp, dict]]:
         """期間最適化を実行"""
+
         print(
             f"[PeriodOptimizer] Starting period optimization for {len(date_range)} hours"
         )
