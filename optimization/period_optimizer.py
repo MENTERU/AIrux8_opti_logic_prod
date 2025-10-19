@@ -137,6 +137,11 @@ def optimize_zone_period(
     )
 
     # 天候データの準備
+    if weather_df is None or weather_df.empty:
+        raise ValueError(
+            "天候データが提供されていません。APIからデータを取得してください。"
+        )
+
     weather_dict = {}
     for _, row in weather_df.iterrows():
         weather_dict[row["datetime"]] = {
@@ -166,7 +171,6 @@ def optimize_zone_period(
     temp_change_violations = (
         0  # Track how many times temp change constraint is violated
     )
-    mode_transition_violations = 0  # Track mode transition constraint violations
 
     # 各時刻で最適化
     for timestamp in date_range:
@@ -191,7 +195,7 @@ def optimize_zone_period(
         if not is_biz:
             # Non-business hours: Set mode to OFF with consistent 22°C set temperature
             best_combination = {
-                "set_temp": 22.0,  # Consistent set temperature for all areas during non-business hours
+                "set_temp": 22.0,  # Consistent set temperature for non-business hours
                 "mode": "OFF",
                 "fan": "LOW",  # Default fan speed for OFF mode
                 "pred_temp": last_temp,  # Temperature remains the same when OFF
@@ -463,4 +467,3 @@ class PeriodOptimizer:
         print(f"[PeriodOptimizer] Optimized {len(results)} zones")
 
         return results
-

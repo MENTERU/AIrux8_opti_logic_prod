@@ -779,12 +779,31 @@ class AirconOptimizer:
             print("[Optimize] モデルが見つかりません")
             return None
 
-        # 天候データの読み込み
-        weather_df = self._load_weather_forecast(
-            start_date, end_date, weather_api_key, coordinates
-        )
-        if weather_df is None:
-            print("[Optimize] 天候データが見つかりません")
+        # 天候データの取得（APIから強制取得）
+        print("[Optimize] APIから天候データを取得中...")
+        try:
+            from processing.utilities.weatherapi_client import (
+                VisualCrossingWeatherAPIDataFetcher,
+            )
+
+            weather_df = VisualCrossingWeatherAPIDataFetcher(
+                coordinates=coordinates,
+                start_date=start_date,
+                end_date=end_date,
+                unit="metric",
+                api_key=weather_api_key,
+            ).fetch()
+
+            if weather_df is None or weather_df.empty:
+                print("[Optimize] APIから天候データを取得できませんでした")
+                return None
+
+            # キャッシュに保存
+            self._save_weather_forecast(weather_df, start_date, end_date)
+            print(f"[Optimize] 天候データを取得しました。レコード数: {len(weather_df)}")
+
+        except Exception as e:
+            print(f"[Optimize] 天候データ取得エラー: {e}")
             return None
 
         # 最適化の実行
