@@ -551,28 +551,6 @@ class AirconOptimizer:
         # STEP4: 出力
         output_start_time = time.perf_counter()
         Planner(self.store_name, self.master).export(schedule, self.plan_dir)
-        output_end_time = time.perf_counter()
-        processing_times["計画出力"] = output_end_time - output_start_time
-        print(
-            f"[Run] Planning output completed - 処理時間: {processing_times['計画出力']:.2f}秒"
-        )
-
-        # 総処理時間の表示
-        total_end_time = time.perf_counter()
-        processing_times["総処理時間"] = total_end_time - total_start_time
-
-        print(f"\n{'='*60}")
-        print("📊 処理時間サマリー")
-        print(f"{'='*60}")
-        for process_name, duration in processing_times.items():
-            if process_name != "総処理時間":
-                percentage = (duration / processing_times["総処理時間"]) * 100
-                print(f"{process_name:12}: {duration:6.2f}秒 ({percentage:5.1f}%)")
-        print(f"{'='*60}")
-        print(f"{'総処理時間':12}: {processing_times['総処理時間']:6.2f}秒 (100.0%)")
-        print(f"{'='*60}")
-        # schedule = None
-        return schedule
 
     def run_preprocessing_only(
         self,

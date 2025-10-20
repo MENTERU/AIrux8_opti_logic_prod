@@ -111,10 +111,10 @@ def _load_weather_forecast(store_name: str) -> Optional[pd.DataFrame]:
     import glob
     from pathlib import Path
 
-    # Use the same date logic as aircon_optimizer.py
-    today = pd.Timestamp.today().normalize()
-    start_date = today.strftime("%Y-%m-%d")
-    end_date = (today + pd.Timedelta(days=3)).strftime("%Y-%m-%d")
+    # Use the same date logic as aircon_optimizer.py (tomorrow as start date)
+    tomorrow = pd.Timestamp.today().normalize() + pd.Timedelta(days=1)
+    start_date = tomorrow.strftime("%Y-%m-%d")
+    end_date = (tomorrow + pd.Timedelta(days=3)).strftime("%Y-%m-%d")
 
     # Convert to filename format (YYYYMMDD)
     start_date_str = start_date.replace("-", "")

@@ -98,6 +98,9 @@ class AreaAggregator:
                     ac_sub["Datetime"] = pd.to_datetime(ac_sub["Datetime"]).dt.floor(
                         freq
                     )
+                    # After categorical mapping, A/C ON/OFF is already numeric (0=OFF, 1=ON)
+                    # So we can use it directly for counting units ON
+
                     g = (
                         ac_sub.groupby("Datetime")
                         .agg(
@@ -105,7 +108,7 @@ class AreaAggregator:
                                 # TODO: Avgに変更すむ良いかどうか検討が必要。優先度低い
                                 "A/C Set Temperature": AreaAggregator._most_frequent,
                                 "Indoor Temp.": "mean",  # 学習は平均室温
-                                "A/C ON/OFF": AreaAggregator._most_frequent,
+                                "A/C ON/OFF": "sum",  # Count of units ON
                                 "A/C Mode": AreaAggregator._most_frequent,
                                 "A/C Fan Speed": AreaAggregator._most_frequent,
                             }
@@ -113,12 +116,17 @@ class AreaAggregator:
                         .reset_index()
                     )
 
-                    # Create A/C Status column based on ON/OFF and Mode
+                    # Add total unit count column for reference
+                    g["Total Units"] = (
+                        ac_sub.groupby("Datetime").size().reset_index()[0]
+                    )
+
+                    # Create A/C Status column based on ON/OFF count and Mode
                     # Status mapping: OFF=0, COOL=1, HEAT=2, FAN=3
                     if "A/C ON/OFF" in g.columns and "A/C Mode" in g.columns:
                         g["A/C Status"] = 0  # Default to OFF
-                        # If AC is ON, use the mode value
-                        on_mask = g["A/C ON/OFF"] == 1
+                        # If any units are ON, use the mode value
+                        on_mask = g["A/C ON/OFF"] > 0
                         g.loc[on_mask, "A/C Status"] = g.loc[on_mask, "A/C Mode"]
                         # Convert to integer type (not float)
                         g["A/C Status"] = g["A/C Status"].fillna(0).astype(int)
