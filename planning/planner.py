@@ -164,23 +164,35 @@ class Planner:
             }
             for z, zs in schedule.items():
                 s = zs.get(t, {})
-                # Check if mode is OFF to determine OnOFF status
-                mode = s.get("mode", FALLBACK_MODE_CODE) if s else FALLBACK_MODE_CODE
-                is_off = (
-                    mode == "OFF"
-                    or mode == 0
-                    or str(mode).upper() == "OFF"
-                    or mode is None
-                )
-                rec[f"{z}_OnOFF"] = "OFF" if is_off else "ON"
+                # Check ON/OFF status using count-based value
+                onoff_count = s.get("onoff_count", 0) if s else 0
+                total_units = self._get_zone_unit_count(
+                    z
+                )  # Get total units for this zone
+                is_off = onoff_count == 0
+                is_all_on = onoff_count == total_units
 
-                # Handle None values for non-business hours
-                if s and s.get("mode") is not None:
+                if is_off:
+                    rec[f"{z}_OnOFF"] = "OFF"
+                elif is_all_on:
+                    rec[f"{z}_OnOFF"] = "ON"
+                else:
+                    # Partial state - show count
+                    rec[f"{z}_OnOFF"] = f"{onoff_count}/{total_units}"
+
+                # Show mode values based on ON/OFF status
+                if is_off:
+                    rec[f"{z}_Mode"] = (
+                        "OFF"  # When room is OFF, AC Status should be OFF
+                    )
+                elif s and s.get("mode") is not None:
                     rec[f"{z}_Mode"] = self._mode_text(
                         s.get("mode", FALLBACK_MODE_CODE)
                     )
                 else:
-                    rec[f"{z}_Mode"] = ""  # Empty for non-business hours
+                    rec[f"{z}_Mode"] = self._mode_text(
+                        FALLBACK_MODE_CODE
+                    )  # Use fallback mode for other cases
 
                 if s and s.get("set_temp") is not None:
                     rec[f"{z}_SetTemp"] = s.get("set_temp", 25)
@@ -197,10 +209,10 @@ class Planner:
                 rec[f"{z}_PredPower"] = (
                     round(float(s.get("pred_power", 0.0)), 2) if s else 0.0
                 )
-                if s and s.get("pred_temp") is not None and s.get("pred_temp") != 0.0:
+                if s and s.get("pred_temp") is not None:
                     rec[f"{z}_PredTemp"] = round(float(s.get("pred_temp")), 2)
                 else:
-                    rec[f"{z}_PredTemp"] = 0.0  # 0.0 for non-business hours
+                    rec[f"{z}_PredTemp"] = 0.0  # 0.0 if no prediction available
             rows.append(rec)
         ctrl_df = pd.DataFrame(rows)
         ctrl_path = os.path.join(out_dir, f"control_type_schedule_{date_str}.csv")
@@ -234,25 +246,33 @@ class Planner:
             for z, units in zone_to_units.items():
                 s = schedule.get(z, {}).get(t, {})
                 for u in units:
-                    # Check if mode is OFF to determine OnOFF status
-                    mode = (
-                        s.get("mode", FALLBACK_MODE_CODE) if s else FALLBACK_MODE_CODE
-                    )
-                    is_off = (
-                        mode == "OFF"
-                        or mode == 0
-                        or str(mode).upper() == "OFF"
-                        or mode is None
-                    )
-                    rec[f"{u}_OnOFF"] = "OFF" if is_off else "ON"
+                    # Check ON/OFF status using count-based value
+                    onoff_count = s.get("onoff_count", 0) if s else 0
+                    total_units = len(units)  # Total units in this zone
+                    is_off = onoff_count == 0
+                    is_all_on = onoff_count == total_units
 
-                    # Handle None values for non-business hours
-                    if s and s.get("mode") is not None:
+                    if is_off:
+                        rec[f"{u}_OnOFF"] = "OFF"
+                    elif is_all_on:
+                        rec[f"{u}_OnOFF"] = "ON"
+                    else:
+                        # Partial state - show count
+                        rec[f"{u}_OnOFF"] = f"{onoff_count}/{total_units}"
+
+                    # Show mode values based on ON/OFF status
+                    if is_off:
+                        rec[f"{u}_Mode"] = (
+                            "OFF"  # When room is OFF, AC Status should be OFF
+                        )
+                    elif s and s.get("mode") is not None:
                         rec[f"{u}_Mode"] = self._mode_text(
                             s.get("mode", FALLBACK_MODE_CODE)
                         )
                     else:
-                        rec[f"{u}_Mode"] = ""  # Empty for non-business hours
+                        rec[f"{u}_Mode"] = self._mode_text(
+                            FALLBACK_MODE_CODE
+                        )  # Use fallback mode for other cases
 
                     if s and s.get("set_temp") is not None:
                         rec[f"{u}_SetTemp"] = s.get("set_temp", 25)
@@ -272,3 +292,18 @@ class Planner:
 
         print(f"[Planner] control schedule: {ctrl_path}")
         print(f"[Planner] unit schedule: {unit_path}")
+
+    def _get_zone_unit_count(self, zone_name: str) -> int:
+        """
+        Get the total number of indoor units for a zone from master data.
+
+        Args:
+            zone_name: Name of the zone (e.g., "Area 1", "Area 2")
+
+        Returns:
+            Total number of indoor units in the zone
+        """
+        if zone_name in self.master:
+            zone_data = self.master[zone_name]
+            return len(zone_data.get("indoor_units", []))
+        return 1  # Default fallback

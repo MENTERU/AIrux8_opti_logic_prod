@@ -207,16 +207,48 @@ def optimize_zone_period(
         )
 
         if not is_biz:
-            # Non-business hours: Only set essential fields, others remain empty
-            best_combination =             {
-                "set_temp": None,  # No set temperature needed outside business hours
-                "mode": None,  # No mode setting needed outside business hours
-                "fan": None,  # No fan setting needed outside business hours
-                "pred_temp": 0.0,  # No temperature prediction needed outside business hours
-                "pred_power": 0.0,  # No power consumption when OFF (needed for power calculation)
-                "outside_temp": weather[
-                    "outdoor_temp"
-                ],  # Weather data needed for context
+            # Non-business hours: Predict with AC OFF
+            base_features = {
+                "A/C Set Temperature": 25.0,  # Default set temp (not used when OFF)
+                "Indoor Temp. Lag1": last_temp,
+                "A/C ON/OFF": 0,  # OFF
+                "A/C Mode": 0,  # OFF mode code
+                "A/C Fan Speed": 0,  # Low/OFF
+                "Outdoor Temp.": weather["outdoor_temp"],
+                "Outdoor Humidity": weather["outdoor_humidity"],
+                "Solar Radiation": weather["solar_radiation"],
+            }
+
+            # Build features and predict
+            features_df = feature_builder.build_features(
+                base_features=base_features,
+                timestamp=timestamp,
+                zone_name=zone_name,
+                weather_history=None,
+                power_history=None,
+            )
+            features = features_df[models.feature_cols]
+
+            # Make predictions
+            if models.multi_output_model is not None:
+                multi_pred = models.multi_output_model.predict(features)
+                temp_pred = float(multi_pred[0][0])
+                # Use actual model prediction for power (baseline building power when AC OFF)
+                power_pred = float(multi_pred[0][1]) * unit_count
+            else:
+                temp_pred = float(models.temp_model.predict(features)[0])
+                # Use actual model prediction for power (baseline building power when AC OFF)
+                base_power_pred = float(models.power_model.predict(features)[0])
+                power_pred = base_power_pred * unit_count
+
+            best_combination = {
+                "set_temp": None,  # No control during non-business hours
+                "mode": None,
+                "fan": None,
+                "onoff_count": 0,  # All units OFF during non-business hours
+                "pred_temp": temp_pred,  # Predicted temperature with AC OFF
+                "pred_power": power_pred,  # Minimal power when AC is OFF
+                "outside_temp": weather["outdoor_temp"],
             }
         else:
             # Business hours: Run full optimization
@@ -232,68 +264,75 @@ def optimize_zone_period(
                 # This is informational - we're applying the constraint, not violating it
                 pass
 
-            for sp in sp_list:
-                # Apply temperature change constraint: max ±1°C change from previous hour
-                if last_set_temp is not None:
-                    temp_change = abs(sp - last_set_temp)
-                    if temp_change > 1.0:
-                        continue  # Skip this temperature if change exceeds 1°C
+            # Define ON/OFF search space: 0 (all OFF) or unit_count (all ON)
+            onoff_candidates = [0, unit_count]
 
-                for md in allowed_modes:
-                    for fs in fan_list:
-                        # 特徴量の作成
-                        base_features = {
-                            "A/C Set Temperature": sp,
-                            "Indoor Temp. Lag1": last_temp,
-                            "A/C ON/OFF": 1,  # Always 1 during business hours
-                            "A/C Mode": md,
-                            "A/C Fan Speed": fs,
-                            "Outdoor Temp.": weather["outdoor_temp"],
-                            "Outdoor Humidity": weather["outdoor_humidity"],
-                            "Solar Radiation": weather["solar_radiation"],
-                        }
+            for onoff in onoff_candidates:
+                for sp in sp_list:
+                    # Apply temperature change constraint: max ±1°C change from previous hour
+                    if last_set_temp is not None:
+                        temp_change = abs(sp - last_set_temp)
+                        if temp_change > 1.0:
+                            continue  # Skip this temperature if change exceeds 1°C
 
-                        # Build complete feature set using feature builder
-                        features_df = feature_builder.build_features(
-                            base_features=base_features,
-                            timestamp=timestamp,
-                            zone_name=zone_name,
-                            weather_history=None,
-                            power_history=None,
-                        )
+                    for md in allowed_modes:
+                        for fs in fan_list:
+                            # 特徴量の作成
+                            base_features = {
+                                "A/C Set Temperature": sp,
+                                "Indoor Temp. Lag1": last_temp,
+                                "A/C ON/OFF": onoff,  # Use count-based ON/OFF
+                                "A/C Mode": md,
+                                "A/C Fan Speed": fs,
+                                "Outdoor Temp.": weather["outdoor_temp"],
+                                "Outdoor Humidity": weather["outdoor_humidity"],
+                                "Solar Radiation": weather["solar_radiation"],
+                            }
 
-                        # Select only the features the model expects
-                        features = features_df[models.feature_cols]
-
-                        # 予測（マルチアウトプットモデルが利用可能な場合は使用）
-                        if models.multi_output_model is not None:
-                            multi_pred = models.multi_output_model.predict(features)
-                            temp_pred = float(multi_pred[0][0])
-                            power_pred = float(multi_pred[0][1]) * unit_count
-                        else:
-                            temp_pred = float(models.temp_model.predict(features)[0])
-                            # 電力予測：ビジネス時間中は通常の予測
-                            base_power_pred = float(
-                                models.power_model.predict(features)[0]
+                            # Build complete feature set using feature builder
+                            features_df = feature_builder.build_features(
+                                base_features=base_features,
+                                timestamp=timestamp,
+                                zone_name=zone_name,
+                                weather_history=None,
+                                power_history=None,
                             )
-                            power_pred = base_power_pred * unit_count
 
-                        combination = {
-                            "set_temp": sp,
-                            "mode": md,
-                            "fan": fs,
-                            "pred_temp": temp_pred,
-                            "pred_power": power_pred,
-                            "outside_temp": weather["outdoor_temp"],
-                        }
+                            # Select only the features the model expects
+                            features = features_df[models.feature_cols]
 
-                        # 負の電力予測値でない組み合わせのみ追加
-                        if power_pred > 0:
-                            all_combinations.append(combination)
+                            # 予測（マルチアウトプットモデルが利用可能な場合は使用）
+                            if models.multi_output_model is not None:
+                                multi_pred = models.multi_output_model.predict(features)
+                                temp_pred = float(multi_pred[0][0])
+                                power_pred = float(multi_pred[0][1]) * unit_count
+                            else:
+                                temp_pred = float(
+                                    models.temp_model.predict(features)[0]
+                                )
+                                # 電力予測：ビジネス時間中は通常の予測
+                                base_power_pred = float(
+                                    models.power_model.predict(features)[0]
+                                )
+                                power_pred = base_power_pred * unit_count
 
-                            # 快適範囲内の組み合わせをフィルタ
-                            if comfort_min <= temp_pred <= comfort_max:
-                                valid_combinations.append(combination)
+                            combination = {
+                                "set_temp": sp,
+                                "mode": md,
+                                "fan": fs,
+                                "onoff_count": onoff,  # Add count-based ON/OFF
+                                "pred_temp": temp_pred,
+                                "pred_power": power_pred,
+                                "outside_temp": weather["outdoor_temp"],
+                            }
+
+                            # 負の電力予測値でない組み合わせのみ追加
+                            if power_pred > 0:
+                                all_combinations.append(combination)
+
+                                # 快適範囲内の組み合わせをフィルタ
+                                if comfort_min <= temp_pred <= comfort_max:
+                                    valid_combinations.append(combination)
 
             # 最適な組み合わせを選択
             if valid_combinations:
@@ -376,11 +415,8 @@ def optimize_zone_period(
         # スケジュールに追加
         schedule[timestamp] = best_combination
 
-        # Track values for next hour (only if not None/0.0)
-        if (
-            best_combination["pred_temp"] is not None
-            and best_combination["pred_temp"] != 0.0
-        ):
+        # Track values for next hour (always update if not None)
+        if best_combination["pred_temp"] is not None:
             last_temp = best_combination["pred_temp"]
         if best_combination["set_temp"] is not None:
             last_set_temp = best_combination["set_temp"]
