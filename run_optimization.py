@@ -8,7 +8,7 @@ from typing import Optional
 
 import pandas as pd
 
-from analysis.reporting import generate_all_reports, reset_outputs
+# from analysis.reporting import generate_all_reports, reset_outputs
 from config.private_information import WEATHER_API_KEY
 from optimization.aircon_optimizer import AirconOptimizer
 
@@ -413,48 +413,42 @@ def run_optimization_for_store(
             column_widths=[20, 50],
         )
 
-        # 可視化の実行（スキップフラグがFalseの場合のみ）
-        if not skip_visualization and execution_mode in ["full", "optimize"]:
-            print(f"\n📊 {store_name}の結果可視化を開始...")
-            try:
-                # 出力をリセットしてから全レポート生成
-                reset_outputs(store_name)
-                stats_df = None
-                try:
-                    generate_all_reports(store_name)
-                except Exception as re:
-                    print(f"⚠️ レポート生成でエラー: {re}")
+        # 可視化の実行（現在は無効化）
+        print(f"\n📊 {store_name}の結果可視化をスキップ...")
+        # try:
+        #     # 出力をリセットしてから全レポート生成
+        #     reset_outputs(store_name)
+        #     stats_df = None
+        #     try:
+        #         generate_all_reports(store_name)
+        #     except Exception as re:
+        #         print(f"⚠️ レポート生成でエラー: {re}")
 
-                print(f"✅ {store_name}の可視化が完了しました")
+        #     print(f"✅ {store_name}の可視化が完了しました")
 
-                # Print visualization files in table format
-                viz_files = [
-                    ["Zone Analysis", "analysis/output/*_analysis.html (各ゾーン分析)"],
-                    [
-                        "Summary Analysis",
-                        "analysis/output/summary_analysis.html (全体サマリー)",
-                    ],
-                    [
-                        "Statistics",
-                        "analysis/output/summary_statistics.csv (統計データ)",
-                    ],
-                ]
+        #     # Print visualization files in table format
+        #     viz_files = [
+        #         ["Zone Analysis", "analysis/output/*_analysis.html (各ゾーン分析)"],
+        #         [
+        #             "Summary Analysis",
+        #             "analysis/output/summary_analysis.html (全体サマリー)",
+        #         ],
+        #         ["Statistics", "analysis/output/summary_statistics.csv (統計データ)"],
+        #     ]
 
-                print_table(
-                    data=viz_files,
-                    title="📁 Visualization Files",
-                    headers=["File Type", "Path"],
-                    column_widths=[20, 50],
-                )
+        #     print_table(
+        #         data=viz_files,
+        #         title="📁 Visualization Files",
+        #         headers=["File Type", "Path"],
+        #         column_widths=[20, 50],
+        #     )
 
-                if stats_df is not None:
-                    print_table(data=stats_df, title="📊 Statistics Summary")
+        #     if stats_df is not None:
+        #         print_table(data=stats_df, title="📊 Statistics Summary")
 
-            except Exception as e:
-                print(f"⚠️ 可視化でエラーが発生しました: {e}")
-                print("最適化結果は正常に生成されています")
-        elif skip_visualization:
-            print("⏭️ 可視化をスキップしました")
+        # except Exception as e:
+        #     print(f"⚠️ 可視化でエラーが発生しました: {e}")
+        #     print("最適化結果は正常に生成されています")
 
         return success
     else:

@@ -83,22 +83,67 @@ class VisualCrossingWeatherAPIDataFetcher:
             list: List of weather data dictionaries for this batch
         """
         url = (
-            f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/"
-            f"{self.coordinates}/{batch_start_date}/{batch_end_date}?unitGroup={self.unit}&key={self.api_key}&include=hours"
+            f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/"
+            f"timeline/{self.coordinates}/{batch_start_date}/{batch_end_date}"
+            f"?unitGroup={self.unit}&key={self.api_key}&include=hours"
         )
 
         print(f"[Weather] Making API request to: {url}")
 
+        # リトライ機能付きでAPIリクエストを実行
+        max_retries = 3
+        retry_delay = 5.0
+
+        for attempt in range(max_retries):
+            try:
+                print(f"[Weather] Attempt {attempt + 1}/{max_retries}")
+                res = requests.get(url, timeout=60)  # タイムアウトを60秒に延長
+                print(f"[Weather] HTTP Status Code: {res.status_code}")
+
+                if res.status_code != 200:
+                    print(f"[Weather] HTTP Error: {res.status_code}")
+                    print(f"[Weather] Response text: {res.text[:500]}")
+                    if attempt < max_retries - 1:
+                        print(f"[Weather] Retrying in {retry_delay} seconds...")
+                        time.sleep(retry_delay)
+                        continue
+                    return []
+
+                res.raise_for_status()
+                break  # 成功した場合はループを抜ける
+
+            except requests.exceptions.Timeout:
+                print(f"[Weather] Request timeout on attempt {attempt + 1}")
+                if attempt < max_retries - 1:
+                    print(f"[Weather] Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    print("[Weather] Max retries exceeded for timeout")
+                    return []
+
+            except requests.exceptions.ConnectionError as e:
+                print(f"[Weather] Connection error on attempt {attempt + 1}: {e}")
+                if attempt < max_retries - 1:
+                    print(f"[Weather] Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    print("[Weather] Max retries exceeded for connection error")
+                    return []
+
+            except Exception as e:
+                print(f"[Weather] Unexpected error on attempt {attempt + 1}: {e}")
+                if attempt < max_retries - 1:
+                    print(f"[Weather] Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    print("[Weather] Max retries exceeded for unexpected error")
+                    return []
+
+        # 成功した場合の処理
         try:
-            res = requests.get(url, timeout=30)
-            print(f"[Weather] HTTP Status Code: {res.status_code}")
-
-            if res.status_code != 200:
-                print(f"[Weather] HTTP Error: {res.status_code}")
-                print(f"[Weather] Response text: {res.text[:500]}")
-                return []
-
-            res.raise_for_status()
             data = res.json()
 
             print(f"[Weather] API Response keys: {list(data.keys())}")
@@ -148,7 +193,8 @@ class VisualCrossingWeatherAPIDataFetcher:
             # Process each batch
             for i, (batch_start, batch_end) in enumerate(date_batches, 1):
                 print(
-                    f"[Weather] Processing batch {i}/{len(date_batches)}: {batch_start} to {batch_end}"
+                    f"[Weather] Processing batch {i}/{len(date_batches)}: "
+                    f"{batch_start} to {batch_end}"
                 )
 
                 # Fetch data for this batch
@@ -158,7 +204,8 @@ class VisualCrossingWeatherAPIDataFetcher:
                 # Add delay between requests to avoid rate limiting
                 if i < len(date_batches):  # Don't delay after the last batch
                     print(
-                        f"[Weather] Waiting {self.delay_between_requests} seconds before next batch..."
+                        f"[Weather] Waiting {self.delay_between_requests} seconds "
+                        f"before next batch..."
                     )
                     time.sleep(self.delay_between_requests)
 

@@ -141,6 +141,11 @@ def optimize_zone_period(
     )
 
     # 天候データの準備
+    if weather_df is None or weather_df.empty:
+        raise ValueError(
+            "天候データが提供されていません。APIからデータを取得してください。"
+        )
+
     weather_dict = {}
     for _, row in weather_df.iterrows():
         weather_dict[row["datetime"]] = {
