@@ -75,7 +75,9 @@ class AirconOptimizer:
         self.plan_dir = os.path.join(get_data_path("output_data_path"), store_name)
         os.makedirs(self.plan_dir, exist_ok=True)
 
-    def _load_processed(self) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+    def _load_processed(
+        self,
+    ) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], Optional[pd.DataFrame]]:
         ac_p = os.path.join(
             self.proc_dir, f"ac_control_processed_{self.store_name}.csv"
         )
@@ -89,6 +91,63 @@ class AirconOptimizer:
         pm = pd.read_csv(pm_p) if os.path.exists(pm_p) else None
         weather = pd.read_csv(weather_p) if os.path.exists(weather_p) else None
         return ac, pm, weather
+
+    def _load_aggregated_training_data(self) -> Optional[pd.DataFrame]:
+        """
+        Load the aggregated training data that was used to train the models.
+        This data is saved in the validation results directory.
+
+        Returns:
+            Aggregated training data DataFrame if available, None otherwise
+        """
+        from config.utils import get_data_path
+
+        # Look for aggregated training data in validation results directory
+        valid_results_dir = os.path.join(
+            get_data_path("valid_results_path"), self.store_name
+        )
+
+        # Check if the directory exists
+        if not os.path.exists(valid_results_dir):
+            print(
+                f"[AirconOptimizer] Validation results directory not found: {valid_results_dir}"
+            )
+            return None
+
+        # Look for CSV files that might contain the aggregated training data
+        csv_files = [f for f in os.listdir(valid_results_dir) if f.endswith(".csv")]
+
+        if not csv_files:
+            print(
+                f"[AirconOptimizer] No CSV files found in validation results directory"
+            )
+            return None
+
+        # Try to load the most recent aggregated data file
+        # Look for files that might contain aggregated training data
+        aggregated_files = [
+            f
+            for f in csv_files
+            if "valid_results" in f or "training_data" in f or "aggregated" in f
+        ]
+
+        if not aggregated_files:
+            print(
+                f"[AirconOptimizer] No aggregated training data files found in validation results"
+            )
+            return None
+
+        # Load the first available aggregated file
+        aggregated_file = os.path.join(valid_results_dir, aggregated_files[0])
+        try:
+            df = pd.read_csv(aggregated_file)
+            print(
+                f"[AirconOptimizer] Loaded aggregated training data: {aggregated_file} ({len(df)} records)"
+            )
+            return df
+        except Exception as e:
+            print(f"[AirconOptimizer] Error loading aggregated training data: {e}")
+            return None
 
     def _get_weather_forecast_path(self, start_date: str, end_date: str) -> str:
         """
@@ -328,43 +387,85 @@ class AirconOptimizer:
         # 天候データ取得（実績期間＋最適化期間をカバー）
         weather_start_time = time.perf_counter()
 
-        # 実績期間の推定（前処理済みデータから）
+        # 実績期間の推定（集約済み訓練データから）
         actual_start_dt = None
         actual_end_dt = None
         try:
-            if ac_processed_data is not None and not ac_processed_data.empty:
-                ac_dt = pd.to_datetime(ac_processed_data.get("datetime"))
-                actual_start_dt = (
-                    ac_dt.min()
-                    if actual_start_dt is None
-                    else min(actual_start_dt, ac_dt.min())
+            # First try to get date range from aggregated training data
+            aggregated_training_data = self._load_aggregated_training_data()
+            if (
+                aggregated_training_data is not None
+                and not aggregated_training_data.empty
+            ):
+                # Use aggregated training data (the one used for model training)
+                if "Datetime" in aggregated_training_data.columns:
+                    agg_dt = pd.to_datetime(aggregated_training_data["Datetime"])
+                    actual_start_dt = agg_dt.min()
+                    actual_end_dt = agg_dt.max()
+                    print(
+                        f"[Run] Using aggregated training data date range: {actual_start_dt} to {actual_end_dt}"
+                    )
+                elif "datetime" in aggregated_training_data.columns:
+                    agg_dt = pd.to_datetime(aggregated_training_data["datetime"])
+                    actual_start_dt = agg_dt.min()
+                    actual_end_dt = agg_dt.max()
+                    print(
+                        f"[Run] Using aggregated training data date range: {actual_start_dt} to {actual_end_dt}"
+                    )
+            else:
+                # Fallback to raw processed data if aggregated data not available
+                print(
+                    "[Run] Aggregated training data not available, using raw processed data"
                 )
-                actual_end_dt = (
-                    ac_dt.max()
-                    if actual_end_dt is None
-                    else max(actual_end_dt, ac_dt.max())
-                )
-            if pm_processed_data is not None and not pm_processed_data.empty:
-                pm_dt = pd.to_datetime(pm_processed_data.get("datetime"))
-                actual_start_dt = (
-                    pm_dt.min()
-                    if actual_start_dt is None
-                    else min(actual_start_dt, pm_dt.min())
-                )
-                actual_end_dt = (
-                    pm_dt.max()
-                    if actual_end_dt is None
-                    else max(actual_end_dt, pm_dt.max())
-                )
-        except Exception:
+                if ac_processed_data is not None and not ac_processed_data.empty:
+                    ac_dt = pd.to_datetime(ac_processed_data.get("datetime"))
+                    actual_start_dt = (
+                        ac_dt.min()
+                        if actual_start_dt is None
+                        else min(actual_start_dt, ac_dt.min())
+                    )
+                    actual_end_dt = (
+                        ac_dt.max()
+                        if actual_end_dt is None
+                        else max(actual_end_dt, ac_dt.max())
+                    )
+                if pm_processed_data is not None and not pm_processed_data.empty:
+                    pm_dt = pd.to_datetime(pm_processed_data.get("datetime"))
+                    actual_start_dt = (
+                        pm_dt.min()
+                        if actual_start_dt is None
+                        else min(actual_start_dt, pm_dt.min())
+                    )
+                    actual_end_dt = (
+                        pm_dt.max()
+                        if actual_end_dt is None
+                        else max(actual_end_dt, pm_dt.max())
+                    )
+        except Exception as e:
             # 無視（実績期間が取れない場合は最適化期間のみ）
+            print(f"[Run] Error determining historical date range: {e}")
             pass
 
         # 最適化期間の既定
         if start_date is None or end_date is None:
-            tomorrow = pd.Timestamp.today().normalize() + pd.Timedelta(days=1)
-            start_date = tomorrow.strftime("%Y-%m-%d")
-            end_date = (tomorrow + pd.Timedelta(days=3)).strftime("%Y-%m-%d")
+            if actual_end_dt is not None:
+                # Use one day after the last date of historical data
+                optimization_start_dt = actual_end_dt.normalize() + pd.Timedelta(days=1)
+                start_date = optimization_start_dt.strftime("%Y-%m-%d")
+                end_date = (optimization_start_dt + pd.Timedelta(days=3)).strftime(
+                    "%Y-%m-%d"
+                )
+                print(
+                    f"[Run] Using historical data end date + 1 day: {start_date} to {end_date}"
+                )
+            else:
+                # Fallback to tomorrow if no historical data available
+                tomorrow = pd.Timestamp.today().normalize() + pd.Timedelta(days=1)
+                start_date = tomorrow.strftime("%Y-%m-%d")
+                end_date = (tomorrow + pd.Timedelta(days=3)).strftime("%Y-%m-%d")
+                print(
+                    f"[Run] No historical data found, using tomorrow: {start_date} to {end_date}"
+                )
 
         # 実績期間と最適化期間を統合した取得レンジ
         combined_start_dt = pd.to_datetime(start_date)
@@ -794,9 +895,68 @@ class AirconOptimizer:
 
         # 日付の設定
         if start_date is None or end_date is None:
-            tomorrow = pd.Timestamp.today().normalize() + pd.Timedelta(days=1)
-            start_date = tomorrow.strftime("%Y-%m-%d")
-            end_date = (tomorrow + pd.Timedelta(days=3)).strftime("%Y-%m-%d")
+            # Try to get historical data end date for better continuity
+            actual_end_dt = None
+            try:
+                # First try to get date range from aggregated training data
+                aggregated_training_data = self._load_aggregated_training_data()
+                if (
+                    aggregated_training_data is not None
+                    and not aggregated_training_data.empty
+                ):
+                    # Use aggregated training data (the one used for model training)
+                    if "Datetime" in aggregated_training_data.columns:
+                        agg_dt = pd.to_datetime(aggregated_training_data["Datetime"])
+                        actual_end_dt = agg_dt.max()
+                        print(
+                            f"[Optimize] Using aggregated training data end date: {actual_end_dt}"
+                        )
+                    elif "datetime" in aggregated_training_data.columns:
+                        agg_dt = pd.to_datetime(aggregated_training_data["datetime"])
+                        actual_end_dt = agg_dt.max()
+                        print(
+                            f"[Optimize] Using aggregated training data end date: {actual_end_dt}"
+                        )
+                else:
+                    # Fallback to raw processed data if aggregated data not available
+                    print(
+                        "[Optimize] Aggregated training data not available, using raw processed data"
+                    )
+                    ac_processed_data, pm_processed_data, _ = self._load_processed()
+
+                    if ac_processed_data is not None and not ac_processed_data.empty:
+                        ac_dt = pd.to_datetime(ac_processed_data.get("datetime"))
+                        actual_end_dt = ac_dt.max()
+
+                    if pm_processed_data is not None and not pm_processed_data.empty:
+                        pm_dt = pd.to_datetime(pm_processed_data.get("datetime"))
+                        if actual_end_dt is not None:
+                            actual_end_dt = max(actual_end_dt, pm_dt.max())
+                        else:
+                            actual_end_dt = pm_dt.max()
+            except Exception as e:
+                # If loading data fails, continue with fallback
+                print(f"[Optimize] Error determining historical date range: {e}")
+                pass
+
+            if actual_end_dt is not None:
+                # Use one day after the last date of historical data
+                optimization_start_dt = actual_end_dt.normalize() + pd.Timedelta(days=1)
+                start_date = optimization_start_dt.strftime("%Y-%m-%d")
+                end_date = (optimization_start_dt + pd.Timedelta(days=3)).strftime(
+                    "%Y-%m-%d"
+                )
+                print(
+                    f"[Optimize] Using historical data end date + 1 day: {start_date} to {end_date}"
+                )
+            else:
+                # Fallback to tomorrow if no historical data available
+                tomorrow = pd.Timestamp.today().normalize() + pd.Timedelta(days=1)
+                start_date = tomorrow.strftime("%Y-%m-%d")
+                end_date = (tomorrow + pd.Timedelta(days=3)).strftime("%Y-%m-%d")
+                print(
+                    f"[Optimize] No historical data found, using tomorrow: {start_date} to {end_date}"
+                )
 
         # 座標の設定（マスタデータから取得）
         if coordinates is None:
