@@ -230,3 +230,4 @@ logs/
 analysis/output/
 visualization/
 .cursor/
+*.png
