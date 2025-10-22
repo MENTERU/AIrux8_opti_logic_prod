@@ -228,6 +228,5 @@ validation_plots.html
 # Log files
 logs/
 analysis/output/
-visualization/
 .cursor/
 *.png
