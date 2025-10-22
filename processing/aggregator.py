@@ -1,3 +1,4 @@
+import os
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -39,7 +40,9 @@ class AreaAggregator:
         if not weather.empty:
             # 天気データの列名を統一（datetime -> Datetime）
             if "datetime" in weather.columns:
-                weather["Datetime"] = pd.to_datetime(weather["datetime"]).dt.floor(freq)
+                weather["Datetime"] = pd.to_datetime(weather["datetime"]).dt.floor(
+                    freq.replace("H", "h")
+                )
             elif "Datetime" in weather.columns:
                 weather["Datetime"] = pd.to_datetime(weather["Datetime"]).dt.floor(freq)
             else:
@@ -96,7 +99,7 @@ class AreaAggregator:
                         ac_sub = self._apply_zone_categorical_mapping(ac_sub, zone_name)
 
                     ac_sub["Datetime"] = pd.to_datetime(ac_sub["Datetime"]).dt.floor(
-                        freq
+                        freq.replace("H", "h")
                     )
                     # After categorical mapping, A/C ON/OFF is already numeric (0=OFF, 1=ON)
                     # So we can use it directly for counting units ON
@@ -116,18 +119,15 @@ class AreaAggregator:
                         .reset_index()
                     )
 
-                    # Add total unit count column for reference
-                    g["Total Units"] = (
-                        ac_sub.groupby("Datetime").size().reset_index()[0]
-                    )
-
                     # Create A/C Status column based on ON/OFF count and Mode
                     # Status mapping: OFF=0, COOL=1, HEAT=2, FAN=3
                     if "A/C ON/OFF" in g.columns and "A/C Mode" in g.columns:
                         g["A/C Status"] = 0  # Default to OFF
                         # If any units are ON, use the mode value
                         on_mask = g["A/C ON/OFF"] > 0
-                        g.loc[on_mask, "A/C Status"] = g.loc[on_mask, "A/C Mode"]
+                        g.loc[on_mask, "A/C Status"] = g.loc[
+                            on_mask, "A/C Mode"
+                        ].astype(int)
                         # Convert to integer type (not float)
                         g["A/C Status"] = g["A/C Status"].fillna(0).astype(int)
                         print(
@@ -195,7 +195,9 @@ class AreaAggregator:
                             print(f"  ❌ 電力データが見つかりません")
                             continue
 
-                    sub["Datetime"] = pd.to_datetime(sub["Datetime"]).dt.floor(freq)
+                    sub["Datetime"] = pd.to_datetime(sub["Datetime"]).dt.floor(
+                        freq.replace("H", "h")
+                    )
                     sub = sub.groupby("Datetime")["Total_kWh"].sum().reset_index()
                     sub["adjusted_power"] = sub["Total_kWh"] * share
 
@@ -353,7 +355,9 @@ class AreaAggregator:
                 .groupby("zone")["Indoor Temp."]
                 .shift(1)
             )
-            area_df["Indoor Temp. Lag1"].fillna(area_df["Indoor Temp."], inplace=True)
+            area_df["Indoor Temp. Lag1"] = area_df["Indoor Temp. Lag1"].fillna(
+                area_df["Indoor Temp."]
+            )
 
             # 温度を小数点第1位に丸める
             if "Indoor Temp." in area_df.columns:
@@ -447,6 +451,22 @@ class AreaAggregator:
                             f"[AreaAggregator] {zone_name} - {column} デフォルト値({default_value})で置換: {int(unmapped_mask.sum())}件"
                         )
 
+                # TODO : need to revisit later 
+                # Ensure all NA values are handled before converting to integer
+                if dataframe[column].isna().any():
+                    default_value = get_default_category_value(column)
+                    if default_value is not None:
+                        dataframe[column] = dataframe[column].fillna(default_value)
+                        print(
+                            f"[AreaAggregator] {zone_name} - {column} 残りのNA値をデフォルト値({default_value})で置換"
+                        )
+                    else:
+                        # If no default value, use 0 as fallback
+                        dataframe[column] = dataframe[column].fillna(0)
+                        print(
+                            f"[AreaAggregator] {zone_name} - {column} 残りのNA値を0で置換"
+                        )
+
                 dataframe[column] = dataframe[column].astype(pd.Int64Dtype())
 
         zone_mapping_log["zones"][zone_name] = zone_log
@@ -469,3 +489,212 @@ class AreaAggregator:
         print(f"\n[AreaAggregator] エリア別マッピングログ保存: {log_file}")
 
         return dataframe
+
+
+def _load_weather_forecast(
+    start_date: str,
+    end_date: str,
+    plan_dir: str,
+    weather_api_key: str,
+    coordinates: str,
+) -> Optional[pd.DataFrame]:
+    """
+    Load weather forecast from cached file if it exists, otherwise fetch from API
+
+    Args:
+        start_date: Start date in YYYY-MM-DD format
+        end_date: End date in YYYY-MM-DD format
+        weather_api_key: Weather API key for fetching data if cache is missing
+        coordinates: Coordinates for weather API
+
+    Returns:
+        Weather DataFrame if file exists or can be fetched from API, None otherwise
+    """
+    # Generate weather forecast file path with date range in filename
+    start_clean = start_date.replace("-", "")
+    end_clean = end_date.replace("-", "")
+    filename = f"weather_forecast_{start_clean}_{end_clean}.csv"
+    forecast_path = os.path.join(plan_dir, filename)
+
+    if os.path.exists(forecast_path):
+        print(f"[Run] Loading cached weather forecast: {forecast_path}")
+        try:
+            weather_df = pd.read_csv(forecast_path)
+
+            # Convert datetime column to datetime type if it exists
+            if "datetime" in weather_df.columns:
+                weather_df["datetime"] = pd.to_datetime(weather_df["datetime"])
+                print(f"[Run] Converted datetime column to datetime type")
+
+            print(f"[Run] Cached weather data loaded. Shape: {weather_df.shape}")
+            return weather_df
+        except Exception as e:
+            print(f"[Run] Error loading cached weather data: {e}")
+            return None
+    else:
+        print(f"[Run] No cached weather forecast found: {forecast_path}")
+
+        # Try to fetch weather data from API if credentials are provided
+        if weather_api_key and coordinates:
+            print("[Run] APIから天候データを取得...")
+            try:
+                from processing.utilities.weatherapi_client import (
+                    VisualCrossingWeatherAPIDataFetcher,
+                )
+
+                weather_df = VisualCrossingWeatherAPIDataFetcher(
+                    coordinates=coordinates,
+                    start_date=start_date,
+                    end_date=end_date,
+                    unit="metric",
+                    api_key=weather_api_key,
+                ).fetch()
+                if weather_df is not None:
+                    _save_weather_forecast(weather_df, start_date, end_date, plan_dir)
+                    print("[Run] 天候データをAPIから取得し、キャッシュに保存しました")
+                    return weather_df
+                else:
+                    print("[Run] APIから天候データを取得できませんでした")
+                    return None
+            except Exception as e:
+                print(f"[Run] 天候データ取得エラー: {e}")
+                return None
+        else:
+            print("[Run] 天候データが見つかりません（APIキーまたは座標が未設定）")
+            return None
+
+
+def _save_weather_forecast(
+    weather_df: pd.DataFrame, start_date: str, end_date: str, plan_dir: str
+) -> None:
+    """
+    Save weather forecast to cached file with date range in filename
+
+    Args:
+        weather_df: Weather DataFrame to save
+        start_date: Start date in YYYY-MM-DD format
+        end_date: End date in YYYY-MM-DD format
+    """
+    start_clean = start_date.replace("-", "")
+    end_clean = end_date.replace("-", "")
+    filename = f"weather_forecast_{start_clean}_{end_clean}.csv"
+
+    forecast_path = os.path.join(plan_dir, filename)
+    try:
+        os.makedirs(os.path.dirname(forecast_path), exist_ok=True)
+        weather_df.to_csv(forecast_path, index=False, encoding="utf-8-sig")
+        print(f"[Run] Weather forecast cached to: {forecast_path}")
+    except Exception as e:
+        print(f"[Run] Error saving weather forecast: {e}")
+
+
+def aggregation_runner(
+    store_name: str,
+    store_master_file: dict,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    weather_api_key: Optional[str] = None,
+    freq: str = "1H",
+):
+    """
+    集約のみを実行
+
+    Args:
+        start_date: 開始日
+        end_date: 終了日
+        weather_api_key: Weather API キー
+        freq: 時間粒度
+
+    Returns:
+        pd.DataFrame: 集約されたデータ
+    """
+    if store_master_file is None:
+        print("[Aggregate] マスタ未読込")
+        return None
+
+    print("[Aggregate] 集約のみ実行開始...")
+
+    # Get coordinates from store_master_file
+    coordinates = store_master_file.get("store_info", {}).get("coordinates")
+    if coordinates is None:
+        print(f"[Aggregate] ERROR: No coordinates found in master data")
+        return None
+    else:
+        print(f"[Aggregate] Using coordinates from master data: {coordinates}")
+
+    # 処理済みデータの読み込み
+    from config.utils import get_data_path
+
+    proc_dir = os.path.join(get_data_path("processed_data_path"), store_name)
+    plan_dir = os.path.join(get_data_path("output_data_path"), store_name)
+    ac_p = os.path.join(proc_dir, f"ac_control_processed_{store_name}.csv")
+    pm_p = os.path.join(proc_dir, f"power_meter_processed_{store_name}.csv")
+    weather_p = os.path.join(proc_dir, f"weather_processed_{store_name}.csv")
+    ac_processed_data = pd.read_csv(ac_p) if os.path.exists(ac_p) else None
+    pm_processed_data = pd.read_csv(pm_p) if os.path.exists(pm_p) else None
+    historical_weather_data = (
+        pd.read_csv(weather_p) if os.path.exists(weather_p) else None
+    )
+
+    if ac_processed_data is None or pm_processed_data is None:
+        print("[Aggregate] 処理済みデータが見つかりません")
+        return None
+
+    # 座標情報をマスタから取得
+    if coordinates is None:
+        coordinates = store_master_file.get("store_info", {}).get("coordinates")
+
+    # 天候データの取得
+    weather_df = None
+    if start_date and end_date:
+        weather_df = _load_weather_forecast(
+            start_date, end_date, plan_dir, weather_api_key, coordinates
+        )
+
+    # 天候データの統合
+    combined_weather_df = None
+    if historical_weather_data is not None and not historical_weather_data.empty:
+        if weather_df is not None and not weather_df.empty:
+            historical_max_date = pd.to_datetime(
+                historical_weather_data["datetime"]
+            ).max()
+            weather_df_filtered = weather_df[
+                pd.to_datetime(weather_df["datetime"]) > historical_max_date
+            ]
+            if not weather_df_filtered.empty:
+                combined_weather_df = pd.concat(
+                    [historical_weather_data, weather_df_filtered],
+                    ignore_index=True,
+                )
+            else:
+                combined_weather_df = historical_weather_data
+        else:
+            combined_weather_df = historical_weather_data
+    else:
+        combined_weather_df = weather_df
+
+    # 集約の実行
+    # Use master data from constructor
+    if store_master_file is None:
+        print("[Aggregate] ERROR: Master data not available for aggregator")
+        return None
+
+    # Extract zones data for aggregator
+    aggregator_data = {
+        "store_name": store_master_file.get("store_info", {}).get("name", store_name),
+        "zones": store_master_file.get("zones", {}),
+    }
+    aggregator = AreaAggregator(aggregator_data)
+    area_df = aggregator.build(
+        ac_processed_data, pm_processed_data, combined_weather_df, freq=freq
+    )
+
+    # データの保存
+    if area_df is not None:
+        area_out = os.path.join(proc_dir, f"features_processed_{store_name}.csv")
+        os.makedirs(proc_dir, exist_ok=True)
+        area_df.to_csv(area_out, index=False, encoding="utf-8-sig")
+        print(f"[Aggregate] 集約データを保存: {area_out}")
+
+    print("[Aggregate] 集約完了")
+    return area_df
