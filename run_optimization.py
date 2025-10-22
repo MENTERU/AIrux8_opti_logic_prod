@@ -256,6 +256,7 @@ def parse_arguments():
   uv run run_optimization.py  # フルパイプライン実行
   uv run run_optimization.py --start-date 2024-01-01 --end-date 2024-01-02
   uv run run_optimization.py --store Clea --skip-visualization
+  uv run run_optimization.py --export-excel-stats  # Excel統計ファイルを出力
         """,
     )
 
@@ -279,6 +280,11 @@ def parse_arguments():
         "--skip-visualization", action="store_true", help="可視化をスキップ"
     )
 
+    # Excel export
+    parser.add_argument(
+        "--export-excel-stats", action="store_true", help="Excel統計ファイルを出力"
+    )
+
     return parser.parse_args()
 
 
@@ -288,6 +294,7 @@ def run_optimization_for_store(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     skip_visualization: bool = False,
+    export_excel_stats: bool = False,
 ):
     """
     指定されたストアの最適化を実行
@@ -298,6 +305,7 @@ def run_optimization_for_store(
         start_date (str): 最適化開始日
         end_date (str): 最適化終了日
         skip_visualization (bool): 可視化をスキップするかどうか
+        export_excel_stats (bool): Excel統計ファイルを出力するかどうか
     """
     print(f"🚀 {store_name}の最適化パイプライン開始 (モード: {execution_mode})")
 
@@ -342,6 +350,7 @@ def run_optimization_for_store(
         enable_preprocessing=enable_preprocessing,
         skip_aggregation=skip_aggregation,
         excel_master_data=complete_excel_master_data,
+        export_excel_stats=export_excel_stats,
     )
 
     # 実行モードに応じた処理
@@ -493,6 +502,7 @@ def main():
                 start_date=args.start_date,
                 end_date=args.end_date,
                 skip_visualization=args.skip_visualization,
+                export_excel_stats=args.export_excel_stats,
             )
 
             if not success:
@@ -516,6 +526,7 @@ def main():
         start_date=args.start_date,
         end_date=args.end_date,
         skip_visualization=args.skip_visualization,
+        export_excel_stats=args.export_excel_stats,
     )
 
     # 実行結果の表示

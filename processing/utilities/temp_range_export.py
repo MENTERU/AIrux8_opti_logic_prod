@@ -277,3 +277,346 @@ def export_temp_range_stats(
     # Final timing summary
     total_time = time.time() - start_time
     print(f"[export_temp_range_stats] ⏱️  総実行時間: {total_time:.2f}秒")
+
+
+def _get_most_frequent_fan_speed(fan_speed_list: list) -> str:
+    """
+    Find the most frequent fan speed from a list of fan speed candidates.
+
+    Args:
+        fan_speed_list: List of fan speed strings (e.g., ["Low,High,Medium", "Low", "High"])
+
+    Returns:
+        Most frequent individual fan speed (e.g., "Low")
+    """
+    # Count frequency of each individual fan speed
+    fan_speed_counts = {}
+
+    for fan_speed_string in fan_speed_list:
+        if fan_speed_string == "Unknown":
+            continue
+
+        # Split comma-separated fan speeds and count each one
+        individual_speeds = [speed.strip() for speed in fan_speed_string.split(",")]
+        for speed in individual_speeds:
+            if speed and speed != "Unknown":
+                fan_speed_counts[speed] = fan_speed_counts.get(speed, 0) + 1
+
+    # Return the most frequent fan speed, or "Low" as default
+    if fan_speed_counts:
+        return max(fan_speed_counts, key=fan_speed_counts.get)
+    else:
+        return "Low"
+
+
+def _round_to_half_increment(value):
+    """
+    Round temperature value to the nearest 0.5°C increment.
+
+    Args:
+        value (float): Temperature value to round
+
+    Returns:
+        float: Temperature rounded to nearest 0.5°C increment
+    """
+    if pd.isna(value):
+        return value
+
+    # Round to nearest 0.5 increment
+    # Multiply by 2, round to nearest integer, then divide by 2
+    return round(value * 2) / 2
+
+
+def update_master_from_analysis(store_name: str, processed_dir: str) -> None:
+    """
+    Update MASTER_{store_name}_integrated.xlsx
+    based on AC_setvalue_range_analysis_{store_name}.xlsx.
+
+    LOGIC:
+        1. 各エアコンの月別平均を計算 → mean_settemp, mean_indoor
+        2. 各エアコンの標準偏差を計算 → std_settemp, std_indoor
+        3. 平均±標準偏差で制御限界を設定:
+            上限 = 平均 + 標準偏差
+            下限 = 平均 - 標準偏差
+        4. エリア別に集計して最終的な制御値を決定
+
+    統計結果（AC_setvalue_range_analysis_◯◯.xlsx）を読み込み、
+    MASTER_◯◯.xlsx の関連カラムを自動更新する関数。
+    """
+
+    print(
+        f"🔄 Updating MASTER file for {store_name} ... / {store_name} のマスタファイルを更新中..."
+    )
+
+    # ==============================================================
+    # 1. Define file paths / ファイルパスの定義
+    # ==============================================================
+    analysis_path = os.path.join(
+        processed_dir, f"AC_setvalue_range_analysis_{store_name}.xlsx"
+    )
+    master_path = os.path.join(processed_dir, f"MASTER_{store_name}.xlsx")
+
+    if not os.path.exists(analysis_path):
+        print(
+            f" Analysis file not found: {analysis_path} / 統計ファイルが見つかりません。"
+        )
+        return
+    if not os.path.exists(master_path):
+        print(
+            f" MASTER file not found: {master_path} / マスタファイルが見つかりません。"
+        )
+        return
+
+    # ==============================================================
+    # 2. Read analysis Excel sheets / 統計結果Excelを読み込み
+    # ==============================================================
+    sheets = pd.read_excel(analysis_path, sheet_name=None)
+    indoortemp_mean = sheets.get("Indoortemp平均")
+    indoortemp_std = sheets.get("Indoortemp標準偏差")
+    settemp_mean = sheets.get("設定温度_平均値")
+    settemp_std = sheets.get("設定温度_標準偏差")
+    fanspeed_freq = sheets.get("FanSpeed頻度")
+
+    # ==============================================================
+    # 3. Load MASTER file / マスタファイルを読み込み
+    # ==============================================================
+    master = pd.read_excel(master_path, sheet_name="制御マスタ")
+
+    # Add missing columns if they don't exist
+    target_columns = [
+        "目標室内温度下限",
+        "目標室内温度上限",
+        "設定温度上限",
+        "設定温度下限",
+        "風量候補",
+    ]
+    for col in target_columns:
+        if col not in master.columns:
+            master[col] = pd.NA
+
+    # ==============================================================
+    # 4. Create AC unit to area mapping and compute control limits by area
+    #    ACユニットからエリアへのマッピングを作成し、エリア別に制御値を算出
+    # ==============================================================
+
+    # Load the MASTER sheet to get AC unit to area mapping
+    master_mapping = pd.read_excel(master_path, sheet_name="MASTER")
+    ac_to_area = dict(zip(master_mapping["環境予測区分"], master_mapping["制御区分"]))
+
+    ac_names = [c for c in settemp_mean.columns if c not in ["Unnamed: 0", "index"]]
+
+    # Use monthly-specific data (not area-averaged)
+    # Keep the monthly data structure for monthly-specific calculations
+    settemp_monthly = settemp_mean.set_index("Unnamed: 0")
+    indoortemp_monthly = indoortemp_mean.set_index("Unnamed: 0")
+    settemp_std_monthly = settemp_std.set_index("Unnamed: 0")
+    indoortemp_std_monthly = indoortemp_std.set_index("Unnamed: 0")
+
+    # Calculate monthly-specific values for each area
+    area_updates = {}
+    months_jp = [f"{i}月" for i in range(1, 13)]
+
+    print(
+        f"\n🔍 [CALCULATION] Starting monthly-specific calculations for {len(ac_names)} AC units across {len(months_jp)} months"
+    )
+    print(f"📊 [DATA] AC units: {ac_names[:5]}... (showing first 5)")
+    print(f"📅 [DATA] Months: {months_jp}")
+
+    for month in months_jp:
+        area_updates[month] = {}
+        print(f"\n📅 [MONTH] Processing {month}...")
+
+        for ac in ac_names:
+            if ac not in ac_to_area:
+                continue  # Skip AC units that don't have area mapping
+
+            area = ac_to_area[ac]
+            if pd.isna(area):
+                continue  # Skip AC units with NaN area
+
+            # Get monthly-specific values
+            monthly_mean_settemp = (
+                settemp_monthly.loc[month, ac]
+                if month in settemp_monthly.index
+                else pd.NA
+            )
+            monthly_std_settemp = (
+                settemp_std_monthly.loc[month, ac]
+                if month in settemp_std_monthly.index
+                else 0
+            )
+            monthly_mean_indoor = (
+                indoortemp_monthly.loc[month, ac]
+                if month in indoortemp_monthly.index
+                else pd.NA
+            )
+            monthly_std_indoor = (
+                indoortemp_std_monthly.loc[month, ac]
+                if month in indoortemp_std_monthly.index
+                else 0
+            )
+
+            # Log detailed calculation for first few AC units
+            if ac in ac_names[:3]:  # Log first 3 AC units for each month
+                print(f"  🔧 [AC] {ac} → {area}:")
+                print(
+                    f"    📊 Set temp: mean={monthly_mean_settemp:.1f}°C, std={monthly_std_settemp:.1f}°C"
+                )
+                print(
+                    f"    📊 Indoor temp: mean={monthly_mean_indoor:.1f}°C, std={monthly_std_indoor:.1f}°C"
+                )
+
+            # Calculate monthly-specific limits
+            upper_settemp = (
+                _round_to_half_increment(monthly_mean_settemp + monthly_std_settemp)
+                if pd.notna(monthly_mean_settemp)
+                else pd.NA
+            )
+            lower_settemp = (
+                _round_to_half_increment(monthly_mean_settemp - monthly_std_settemp)
+                if pd.notna(monthly_mean_settemp)
+                else pd.NA
+            )
+            upper_indoortemp = (
+                _round_to_half_increment(monthly_mean_indoor + monthly_std_indoor)
+                if pd.notna(monthly_mean_indoor)
+                else pd.NA
+            )
+            lower_indoortemp = (
+                _round_to_half_increment(monthly_mean_indoor - monthly_std_indoor)
+                if pd.notna(monthly_mean_indoor)
+                else pd.NA
+            )
+
+            # Log calculated limits for first few AC units
+            if ac in ac_names[:3]:  # Log first 3 AC units for each month
+                print(f"    🎯 Calculated limits:")
+                print(f"      Set temp: {lower_settemp:.1f}°C to {upper_settemp:.1f}°C")
+                print(
+                    f"      Indoor temp: {lower_indoortemp:.1f}°C to {upper_indoortemp:.1f}°C"
+                )
+
+            # --------------------------------------------------------------
+            # Determine most frequent fan speed(s) for this month
+            # 風量頻度データから上位カテゴリを抽出
+            # --------------------------------------------------------------
+            fansspeed_df = fanspeed_freq[fanspeed_freq["Unnamed: 1"].notna()]
+            fansspeeds_counts = (
+                fansspeed_df.groupby("Unnamed: 1")[ac]
+                .sum()
+                .sort_values(ascending=False)
+                .index.tolist()
+            )
+            fanspeeds_candidates = (
+                ",".join(fansspeeds_counts[:3])
+                if len(fansspeeds_counts) > 0
+                else "Unknown"
+            )
+
+            # Initialize area if not exists
+            if area not in area_updates[month]:
+                area_updates[month][area] = {
+                    "目標室内温度下限": [],
+                    "目標室内温度上限": [],
+                    "設定温度上限": [],
+                    "設定温度下限": [],
+                    "風量候補": [],
+                }
+
+            # Collect values for this area and month
+            area_updates[month][area]["目標室内温度下限"].append(lower_indoortemp)
+            area_updates[month][area]["目標室内温度上限"].append(upper_indoortemp)
+            area_updates[month][area]["設定温度上限"].append(upper_settemp)
+            area_updates[month][area]["設定温度下限"].append(lower_settemp)
+            area_updates[month][area]["風量候補"].append(fanspeeds_candidates)
+
+    # Calculate monthly-specific values for each area
+    print(f"\n🔄 [AGGREGATION] Aggregating AC units by area for each month...")
+    updates = {}
+    for month in months_jp:
+        updates[month] = {}
+        print(f"\n📅 [AGGREGATION] Processing {month}...")
+
+        for area, values in area_updates[month].items():
+            # Calculate area averages and round to 0.5 increments
+            avg_lower_indoor = _round_to_half_increment(
+                pd.Series(values["目標室内温度下限"]).mean()
+            )
+            avg_upper_indoor = _round_to_half_increment(
+                pd.Series(values["目標室内温度上限"]).mean()
+            )
+            avg_upper_set = _round_to_half_increment(
+                pd.Series(values["設定温度上限"]).mean()
+            )
+            avg_lower_set = _round_to_half_increment(
+                pd.Series(values["設定温度下限"]).mean()
+            )
+            most_frequent_fan = _get_most_frequent_fan_speed(values["風量候補"])
+
+            updates[month][area] = {
+                "目標室内温度下限": avg_lower_indoor,
+                "目標室内温度上限": avg_upper_indoor,
+                "設定温度上限": avg_upper_set,
+                "設定温度下限": avg_lower_set,
+                "風量候補": most_frequent_fan,
+            }
+
+            # Log area aggregation results
+            ac_count = len(values["設定温度上限"])
+            print(f"  🏢 [AREA] {area}: {ac_count} AC units →")
+            print(f"    📊 Set temp: {avg_lower_set:.1f}°C to {avg_upper_set:.1f}°C")
+            print(
+                f"    📊 Indoor temp: {avg_lower_indoor:.1f}°C to {avg_upper_indoor:.1f}°C"
+            )
+            print(f"    🌪️ Fan speed: {most_frequent_fan}")
+
+    # ==============================================================
+    # 5. Update MASTER rows / マスタの該当行を更新
+    # ==============================================================
+    print(f"\n💾 [UPDATE] Updating MASTER file with calculated values...")
+    updated_rows = 0
+    for i, row in master.iterrows():
+        area_name = row.get("制御区分")  # Area key column
+        month_name = row.get("月")  # Month key column
+
+        if month_name in updates and area_name in updates[month_name]:
+            # Log first few updates
+            if updated_rows < 5:
+                print(f"  📝 [UPDATE] {month_name} - {area_name}:")
+                for col, val in updates[month_name][area_name].items():
+                    if col in master.columns:
+                        print(f"    {col}: {val}")
+                        master.at[i, col] = val
+            else:
+                # Update without logging for remaining rows
+                for col, val in updates[month_name][area_name].items():
+                    if col in master.columns:
+                        master.at[i, col] = val
+            updated_rows += 1
+
+    print(f"\n✅ [SUMMARY] Updated {updated_rows} rows with monthly-specific values")
+
+    # ==============================================================
+    # 6. Save updated MASTER / 更新後のマスタを保存
+    # ==============================================================
+    # Read all existing sheets first to preserve them
+    all_sheets = pd.read_excel(master_path, sheet_name=None)
+
+    # Update only the 制御マスタ sheet while preserving all other sheets
+    all_sheets["制御マスタ"] = master
+
+    # Write all sheets back to the file
+    with pd.ExcelWriter(master_path, engine="openpyxl") as writer:
+        for sheet_name, sheet_data in all_sheets.items():
+            sheet_data.to_excel(writer, sheet_name=sheet_name, index=False)
+
+    print(
+        f" MASTER file updated successfully ({updated_rows} rows). / "
+        f" MASTERファイルを更新しました（{updated_rows} 行）。"
+    )
+
+
+if __name__ == "__main__":
+    store_name = "Clea"
+    processed_dir = "/Users/hussain/Menteru-Github/AIrux8_opti_logic/data/01_MasterData"
+    update_master_from_analysis(store_name, processed_dir)

@@ -55,10 +55,12 @@ class AirconOptimizer:
         enable_preprocessing: bool = True,
         skip_aggregation: bool = False,
         excel_master_data: dict = None,
+        export_excel_stats: bool = False,
     ):
         self.store_name = store_name
         self.enable_preprocessing = enable_preprocessing
         self.skip_aggregation = skip_aggregation
+        self.export_excel_stats = export_excel_stats
 
         # Use Excel master data if provided, otherwise fall back to JSON
         if excel_master_data is not None:
@@ -369,7 +371,7 @@ class AirconOptimizer:
                 ac_processed_data,
                 pm_processed_data,
                 historical_weather_data,
-                export_temp_range_stats=False,
+                export_temp_range_stats=self.export_excel_stats,
             )
             preprocessing_end_time = time.perf_counter()
             processing_times["前処理"] = (
@@ -652,6 +654,22 @@ class AirconOptimizer:
         # STEP4: 出力
         output_start_time = time.perf_counter()
         Planner(self.store_name, self.master).export(schedule, self.plan_dir)
+        output_end_time = time.perf_counter()
+        processing_times["出力"] = output_end_time - output_start_time
+        print(
+            f"[Run] Output generation completed - 処理時間: {processing_times['出力']:.2f}秒"
+        )
+
+        # 総処理時間の計算
+        total_end_time = time.perf_counter()
+        total_processing_time = total_end_time - total_start_time
+        processing_times["総処理時間"] = total_processing_time
+
+        print(f"[Run] 全処理完了 - 総処理時間: {total_processing_time:.2f}秒")
+        print(f"[Run] 処理時間内訳: {processing_times}")
+
+        # 結果の返却
+        return schedule
 
     def run_preprocessing_only(
         self,
@@ -716,7 +734,7 @@ class AirconOptimizer:
             ac_processed_data,
             pm_processed_data,
             historical_weather_data,
-            export_temp_range_stats=False,
+            export_temp_range_stats=self.export_excel_stats,
         )
         print("[Preprocess] 前処理完了")
         return True

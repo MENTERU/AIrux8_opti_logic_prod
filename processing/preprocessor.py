@@ -8,7 +8,10 @@ from processing.utilities.category_mapping_loader import (
     get_default_category_value,
     map_category_series,
 )
-from processing.utilities.temp_range_export import export_temp_range_stats
+from processing.utilities.temp_range_export import (
+    export_temp_range_stats,
+    update_master_from_analysis,
+)
 from processing.utilities.weatherapi_client import VisualCrossingWeatherAPIDataFetcher
 
 
@@ -394,6 +397,11 @@ class DataPreprocessor:
                 store_name=self.store_name,
                 output_dir=self.output_dir,
             )
+            # Use the correct master data directory, not the preprocessed output directory
+            master_data_dir = os.path.join(
+                os.path.dirname(os.path.dirname(self.output_dir)), "01_MasterData"
+            )
+            update_master_from_analysis(self.store_name, master_data_dir)
         except Exception as e:
             print(f"[DataPreprocessor] Failed to export monthly range Excel: {e}")
 
