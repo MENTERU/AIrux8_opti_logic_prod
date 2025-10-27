@@ -1,247 +1,210 @@
-# エアコン最適化システム
+# エアコン最適化システム (Air Conditioning Optimization System)
 
-## 概要
+## 概要 (Overview)
 
 エアコンの設定温度とモードを最適化し、電力消費を最小化するシステムです。営業時間内の室温制約を考慮した期間最適化スケジュールを生成します。
+(A system that optimizes air conditioning temperature settings and modes to minimize power consumption, generating period optimization schedules considering indoor temperature constraints during business hours.)
 
-## セットアップ
+## セットアップ (Setup)
 
-### 1. プライベート情報ファイルの作成
+### 1. プライベート情報ファイルの作成 (Creating Private Information File)
 
 システムを使用する前に、`config/private_information.py` ファイルを作成し、以下の変数を設定してください：
+(Before using the system, create a `config/private_information.py` file and set the following variables:)
 
 ```python
 # config/private_information.py
 # gmailのメールアドレス (Gdriveから取得する場合。現在停止中)
-ACCESS_INFORMATION = "name@menteru.jp" または　ACCESS_INFORMATION = "name@gmail.com"
+ACCESS_INFORMATION = "name@menteru.jp" または(or)　ACCESS_INFORMATION = "name@gmail.com"
 # visual crossing Weather API Key
 WEATHER_API_KEY = "weather_api_key_here"
 ```
 
-**注意**: このファイルは `.gitignore` に含まれているため、Git にコミットされません。各開発者が個別に作成する必要があります。
+**注意 (Note)**: このファイル`config/private_information.py`は `.gitignore` に含まれているため、Git にコミットされません。各開発者が個別に作成する必要があります。
+(This file `config/private_information.py` is included in `.gitignore` and will not be committed to Git. Each developer needs to create it individually.)
 
-### 2. 必要な API キーの取得
+### 3. データフォルダの準備 (Data Folder Setup)
 
-- **Weather API Key**: Visual Crossing Weather API のキーを取得
-  - サイト: https://www.visualcrossing.com/weather-api
-  - 無料プランでも利用可能
-
-### 3. データフォルダの準備
-
-#### ローカルパスを使用する場合（推奨）
+#### ローカルパスを使用する場合（推奨）(Using Local Path - Recommended)
 
 ローカルパスを使用する場合は、データフォルダをプロジェクトのルートディレクトリに配置してください。
+(When using local paths, place the data folder in the project root directory.)
 
-**🗂️フォルダ構造:**
+**🗂️フォルダ構造 (Folder Structure):**
 
-```
+```bash
 AIrux8_opti_logic/
-├── run_optimization.py
-├── config/
-├── processing/
-├── training/
-├── optimization/
-├── planning/
-├── visualization/
-└── data/                    # ← このフォルダをダウンロードして配置
-    ├── 00_InputData/        # 生データ
-    ├── 01_MasterData/       # マスターデータ
-    ├── 02_PreprocessedData/ # 前処理済みデータ（自動生成）
-    ├── 03_Models/           # 学習済みモデル（自動生成）
-    ├── 04_PlanningData/     # 計画データ（自動生成）
-    └── 05_ValidationResults/# 検証結果（自動生成）
+├── main.py                  # メインエントリーポイント (Main Entry Point)
+├── config/                  # 設定ファイル (Configuration Files)
+├── processing/              # データ処理モジュール (Data Processing Modules)
+├── optimization/            # 最適化モジュール (Optimization Modules)
+├── analysis/                # 分析・可視化モジュール (Analysis & Visualization)
+├── pyproject.toml           # プロジェクト設定 (Project Configuration)
+├── uv.lock                  # 依存関係ロックファイル (Dependency Lock File)
+└── data/                    # ← このフォルダをダウンロードして配置 (Download & Place This Folder)
+    ├── 00_InputData/        # 生データ (Raw Data) 
+    ├── 01_MasterData/       # マスターデータ (Master Data)
+    ├── 02_PreprocessedData/ # 前処理済みデータ（自動生成）(Preprocessed Data - Auto Generated)
+    ├── 03_Models/           # 学習済みモデル（自動生成）(Trained Models - Auto Generated)
+    ├── 04_PlanningData/     # 計画データ（自動生成）(Planning Data - Auto Generated)
+    └── 05_ValidationResults/# 検証結果（自動生成）(Validation Results - Auto Generated)
 ```
 
-**データフォルダの取得方法:**
+**データフォルダの取得方法 (How to Get Data Folder):**
 
-1. Google Drive または共有ストレージから `data/` フォルダをダウンロード
-2. プロジェクトのルートディレクトリ（`AIrux8_opti_logic/`）に配置
-3. フォルダ構造が上記の通りになっていることを確認
+1. Google Drive または共有ストレージから `data/` フォルダをダウンロード (Download `data/` folder from Google Drive or shared storage)
+2. プロジェクトのルートディレクトリ（`AIrux8_opti_logic/`）に配置 (Place it in the project root directory)
+3. フォルダ構造が上記の通りになっていることを確認 (Verify the folder structure matches above)
 
-## 実行方法
+## 実行方法 (Execution Methods)
 
-### 基本的な実行コマンド
+### 基本的な実行コマンド (Basic Execution Commands)
 
 ```bash
-# フルパイプライン実行（前処理→学習→最適化）
-uv run run_optimization.py
+# フルパイプライン実行（前処理→学習→最適化）(Full Pipeline - Preprocessing→Training→Optimization)
+uv run main.py
 
-# 特定のストアで実行
-uv run run_optimization.py --store Clea
+# 特定のストアで実行 (Run for specific store)
+uv run main.py --store Clea
 
-# 特定の期間で実行
-uv run run_optimization.py --start-date 2024-01-01 --end-date 2024-01-02
+# 特定の期間で実行 (Run for specific period)
+uv run main.py --start-date 2024-01-01 --end-date 2024-01-02
 ```
 
-### 段階別実行フラグ
+### 段階別実行フラグ (Step-by-Step Execution Flags)
 
 ```bash
-# 前処理のみ実行
-uv run run_optimization.py --preprocess-only
+# 前処理のみ実行 (Preprocessing only)
+uv run main.py --preprocess-only
 
-# 集約のみ実行
-uv run run_optimization.py --aggregate-only
+# 集約のみ実行 (Aggregation only)
+uv run main.py --aggregate-only
 
-# モデル学習のみ実行
-uv run run_optimization.py --train-only
+# モデル学習のみ実行 (Model training only)
+uv run main.py --train-only
 
-# 最適化のみ実行（事前に学習済みモデルが必要）
-uv run run_optimization.py --optimize-only
-
-# 可視化をスキップ
-uv run run_optimization.py --skip-visualization
-```
-
-## 最適化アルゴリズム
-
-### 期間最適化システム（PeriodOptimizer）
-
-本システムは**期間最適化**を採用し、各時刻で独立して最適化を実行します。
-
-#### 1. 基本方針
-
-- **営業時間内**: 快適温度範囲内で電力消費を最小化
-- **営業時間外**: 自動的にOFFモードに設定
-- **制約条件**: 温度変化制約（±1°C/時）、モード遷移制約を適用
-
-#### 2. 最適化フロー
+# 最適化のみ実行（事前に学習済みモデルが必要）(Optimization only - requires pre-trained models)
+uv run main.py --optimize-only
 
 ```
-各時刻に対して:
-├── 営業時間判定
-│   ├── 営業時間外 → OFFモード（22°C設定）
-│   └── 営業時間内 → 最適化実行
-│       ├── 候補生成（温度×モード×ファン速度）
-│       ├── 制約適用
-│       │   ├── 温度変化制約（前時刻±1°C以内）
-│       │   └── モード遷移制約
-│       │       ├── HEAT → OFF/FANのみ
-│       │       └── その他 → OFF/FAN/COOL
-│       ├── 予測実行
-│       │   ├── 室温予測（温度モデル）
-│       │   └── 電力予測（電力モデル）
-│       └── 最適解選択
-│           ├── 快適範囲内 → 電力最小
-│           └── 快適範囲外 → 快適温度に最も近い
+
+## 最適化アルゴリズム (Optimization Algorithm)
+
+### 概要 (Overview)
+
+本システムは**履歴パターンマッチング最適化**を採用し、過去の類似天候条件での最適なエアコン設定を学習して、将来の天気予報に基づいて最適な設定を決定します。
+(This system adopts **historical pattern matching optimization**, learning optimal AC settings from past similar weather conditions to determine optimal settings based on future weather forecasts.)
+
+### 前処理・集約 (Preprocessing & Aggregation)
+
+**データ前処理 (Data Preprocessing):**
+- 生データの正規化とクリーニング (Raw data normalization and cleaning)
+- AC制御データと電力メーターデータの統合 (Integration of AC control and power meter data)
+- 欠損値処理と異常値検出 (Missing value handling and outlier detection)
+
+**データ集約 (Data Aggregation):**
+- 制御エリア単位でのデータ集約 (Data aggregation by control area)
+- 時間特徴量の追加（曜日、時刻、月、週末フラグ等）(Time feature addition - day of week, hour, month, weekend flags, etc.)
+- ラグ特徴量とローリング統計の生成 (Lag features and rolling statistics generation)
+
+### 最適化アルゴリズム (Optimization Algorithm)
+
+#### 1. 基本概念 (Basic Concept)
+
+**履歴パターンマッチング (Historical Pattern Matching):**
+- 天気予報データと過去の履歴データを比較 (Compare weather forecast data with historical data)
+- 類似した天候条件（外気温、日射量）の履歴パターンを検索 (Search for historical patterns with similar weather conditions - outdoor temperature, solar radiation)
+- 最適な設定パターンを学習・適用 (Learn and apply optimal setting patterns)
+
+#### 2. 最適化フロー (Optimization Flow)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    最適化プロセス  (Optimization Process)                    │
+└─────────────────────────────────────────────────────────────────┘
+
+入力データ (Input Data):
+├── 天気予報データ (Weather Forecast Data)
+│   ├── 外気温 (Outdoor Temperature)
+│   ├── 日射量 (Solar Radiation)
+│   └── 湿度 (Humidity)
+├── 履歴データ (Historical Data)
+│   ├── 過去の天候データ (Past Weather Data)
+│   ├── AC設定履歴 (AC Setting History)
+│   └── 電力消費履歴 (Power Consumption History)
+└── マスターデータ (Master Data)
+    ├── 営業時間設定 (Operating Hours)
+    ├── 快適温度範囲 (Comfort Temperature Range)
+    └── ゾーン設定 (Zone Settings)
+
+各時刻・各ゾーンに対して (For Each Time Point & Zone):
+├── 1. 営業時間判定 (Operating Hours Check)
+│   ├── 営業時間外 (Non-Business Hours) → OFFモード設定 (Set OFF Mode)
+│   └── 営業時間内 (Business Hours) → 最適化実行 (Execute Optimization)
+│
+├── 2. 類似パターン検索 (Similar Pattern Search)
+│   ├── 同一時刻の履歴データを抽出 (Extract Historical Data for Same Hour)
+│   ├── 天候類似度計算 (Weather Similarity Calculation)
+│   │   ├── 外気温差 ≤ ±0.5°C (Outdoor Temp Diff ≤ ±0.5°C)
+│   │   └── Z-score正規化による類似度スコア (Z-score Normalized Similarity Score)
+│   └── 上位10件の類似パターンを選択 (Select Top 10 Similar Patterns)
+│
+├── 3. 快適性フィルタリング (Comfort Filtering)
+│   ├── 快適温度範囲内のパターンのみを保持 (Keep Only Patterns Within Comfort Range)
+│   └── 季節・月別の快適温度範囲を適用 (Apply Seasonal/Monthly Comfort Range)
+│
+├── 4. スコアリング・選択 (Scoring & Selection)
+│   ├── 電力スコア計算 (Power Score Calculation)
+│   │   └── 電力消費量の正規化スコア (Normalized Power Consumption Score)
+│   ├── 温度スコア計算 (Temperature Score Calculation)
+│   │   └── 快適温度からの偏差スコア (Deviation from Comfort Temperature Score)
+│   ├── 時間重み付け (Time-based Weighting)
+│   │   ├── 朝 (Morning): 温度重視 (Temp: 80%, Power: 20%)
+│   │   ├── 午後 (Afternoon): バランス (Temp: 50%, Power: 50%)
+│   │   └── 夕方 (Evening): 電力重視 (Temp: 30%, Power: 70%)
+│   └── 最適パターン選択 (Optimal Pattern Selection)
+│       └── 最小複合スコアのパターンを選択 (Select Pattern with Minimum Combined Score)
+│
+└── 5. 結果出力 (Result Output)
+    ├── 最適AC設定 (Optimal AC Settings)
+    │   ├── 設定温度 (Set Temperature)
+    │   ├── 運転モード (Operation Mode)
+    │   └── ファン速度 (Fan Speed)
+    ├── 予測結果 (Prediction Results)
+    │   ├── 予測室温 (Predicted Indoor Temperature)
+    │   └── 予測電力消費 (Predicted Power Consumption)
+    └── メタデータ (Metadata)
+        ├── 類似度スコア (Similarity Score)
+        ├── 複合スコア (Combined Score)
+        └── 使用した履歴データ (Used Historical Data)
 ```
 
-#### 3. 制約条件
+#### 3. アルゴリズムの特徴 (Algorithm Features)
 
-**温度変化制約:**
-- 前時刻の設定温度から±1°C以内の変更のみ許可
-- 制約違反時は最も近い温度で再計算
+**天候類似度計算 (Weather Similarity Calculation):**
+- 外気温の重み: 70% (Outdoor Temperature Weight: 70%)
+- 日射量の重み: 30% (Solar Radiation Weight: 30%)
+- Z-score正規化による標準化 (Standardization using Z-score normalization)
+- 温度許容差: ±0.5°C (Temperature Tolerance: ±0.5°C)
 
-**モード遷移制約:**
-- HEATモード → OFF/FANのみ許可
-- その他のモード → OFF/FAN/COOL許可
-- 制約により急激なモード変更を防止
+**時間重み付けシステム (Time-based Weighting System):**
+- 朝 (6:00-12:00): 快適性重視 (Comfort Priority)
+- 午後 (12:00-18:00): バランス重視 (Balance Priority)
+- 夕方 (18:00-24:00): 省エネ重視 (Energy Saving Priority)
 
-**電力予測制約:**
-- 負の電力予測値（0未満）の組み合わせは除外
-- 電力予測値が0以上の組み合わせのみを最適化候補として考慮
-- 非現実的な負の電力消費を防止し、実用的な最適化を実現
+**快適性制約 (Comfort Constraints):**
+- 季節別快適温度範囲の適用 (Apply Seasonal Comfort Temperature Range)
+- 快適範囲外のパターンは除外 (Exclude Patterns Outside Comfort Range)
+- 快適性を最優先に保証 (Guarantee Comfort as Top Priority)
 
-#### 4. 予測モデル
+#### 4. 最適化戦略 (Optimization Strategy)
 
-**温度予測:**
-- XGBoost回帰モデル
-- 特徴量: 設定温度、前時刻室温、A/C状態、外気温、湿度、時間特徴量等
+**多目的最適化 (Multi-objective Optimization):**
+- 目的1: 電力消費最小化 (Objective 1: Minimize Power Consumption)
+- 目的2: 快適性維持 (Objective 2: Maintain Comfort)
+- 重み付けによるバランス調整 (Balance Adjustment through Weighting)
 
-**電力予測:**
-- ログ変換XGBoost回帰モデル（非負値保証）
-- 特徴量: 温度特徴量 + 室内温度
-- 予測値は自動的に非負値に変換
-
-#### 5. 最適化戦略
-
-**快適範囲内の場合:**
-- 電力消費量が最小の組み合わせを選択
-- 快適性を保ちながら省エネを実現
-
-**快適範囲外の場合:**
-- 快適温度範囲に最も近い温度を予測する組み合わせを選択
-- 快適性を優先しつつ、可能な限り省エネを考慮
-
-## システム構成
-
-### 1. データ処理プロセス (`processing/`)
-
-#### DataPreprocessor (`preprocessor.py`)
-- 生データの読み込みと前処理
-- AC制御データ、電力メーターデータの正規化
-- 欠損値処理とデータクリーニング
-
-#### AreaAggregator (`aggregator.py`)
-- 制御エリア単位でのデータ集約
-- 時間特徴量の追加（曜日、時刻、月、週末フラグ等）
-- ラグ特徴量の生成
-
-### 2. 機械学習プロセス (`training/`)
-
-#### ModelBuilder (`model_builder.py`)
-- 制御エリア別の予測モデル学習
-- 温度予測モデル（XGBoost）
-- 電力予測モデル（ログ変換XGBoost）
-- マルチアウトプットモデル（温度+電力同時予測）
-
-#### DataProcessor (`data_processor.py`)
-- 特徴量エンジニアリング
-- ラグ特徴量、ローリング特徴量の生成
-- 時間特徴量の追加
-
-### 3. 最適化プロセス (`optimization/`)
-
-#### PeriodOptimizer (`period_optimizer.py`)
-- 期間最適化の実行
-- 制約条件の適用
-- 並列処理による高速化
-
-#### OptimizationFeatureBuilder (`feature_builder.py`)
-- 最適化時の特徴量構築
-- 履歴データの管理
-- エンジニアリング特徴量の生成
-
-### 4. 計画・出力プロセス (`planning/`)
-
-#### Planner (`planner.py`)
-- 最適化結果のスケジュール出力
-- 制御区分別・室内機別スケジュール生成
-- CSV形式での出力
-
-
-## 出力結果
-
-### CSV ファイル
-
-- `data/04_PlanningData/{Store}/control_type_schedule_YYYYMMDD.csv` - 制御区分別スケジュール
-- `data/04_PlanningData/{Store}/unit_schedule_YYYYMMDD.csv` - 室内機別スケジュール
-
-### 検証結果
-
-- `data/05_ValidationResults/{Store}/valid_results_{Zone}.csv` - 各ゾーンの予測結果
-- 温度予測、電力予測の詳細データ
-
-### 学習済みモデル
-
-- `data/03_Models/{Store}/models_{Zone}.pkl` - 制御エリア別学習済みモデル
-
-
-## トラブルシューティング
-
-### よくある問題
-
-1. **`private_information.py` が見つからない**
-   - `config/private_information.py` ファイルを作成してください
-   - 必要な変数を設定してください
-
-2. **モデルが見つからない**
-   - `--train-only` でモデルを学習してください
-   - `data/03_Models/{Store}/` にモデルファイルが存在するか確認
-
-3. **天気データが取得できない**
-   - Visual Crossing Weather API のキーが正しく設定されているか確認
-   - インターネット接続を確認
-
-4. **データファイルが見つからない**
-   - `data/` フォルダがプロジェクトのルートディレクトリに配置されているか確認
-   - `data/00_InputData/{Store}/` に必要な CSV ファイルが存在するか確認
+**学習型最適化 (Learning-based Optimization):**
+- 過去の実績データから学習 (Learn from Past Performance Data)
+- 類似条件での最適解を適用 (Apply Optimal Solutions for Similar Conditions)
+- 継続的な改善と適応 (Continuous Improvement and Adaptation)

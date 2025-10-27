@@ -60,19 +60,18 @@ def export_temp_range_stats(
     output_filename = f"AC_setvalue_range_analysis_{store_name}.xlsx"
     output_path = os.path.join(output_dir, output_filename)
 
-    # OPTIMIZED: Use view instead of full copy to save memory
-    df = ac_df
-
     # =============================
     # STEP1: データ前処理
     # =============================
     step1_start = time.time()
 
     # A/C ONデータのみ抽出
-    if "A/C ON/OFF" in df.columns:
+    if "A/C ON/OFF" in ac_df.columns:
         # OPTIMIZED: Use boolean mask instead of copy operation
-        ac_on_mask = df["A/C ON/OFF"] == "ON"
-        df = df[ac_on_mask]
+        ac_on_mask = ac_df["A/C ON/OFF"] == "ON"
+        df = ac_df[ac_on_mask].copy()  # Create a copy to avoid SettingWithCopyWarning
+    else:
+        df = ac_df.copy()  # Create a copy to avoid SettingWithCopyWarning
 
     # month列の生成
     if "month" not in df.columns:

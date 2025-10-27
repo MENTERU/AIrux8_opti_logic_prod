@@ -312,3 +312,142 @@ class MasterDataLoader:
 
             traceback.print_exc()
             return None
+
+
+def get_comfort_range(master_data: dict, zone: str, month: int) -> tuple[float, float]:
+    """
+    Extract comfort temperature range (目標室内温度下限, 目標室内温度上限) for given zone and month
+
+    Args:
+        master_data: Master data dictionary from get_complete_master_data()
+        zone: Zone name (e.g., "Area 1", "Area 2", etc.)
+        month: Month number (1-12)
+
+    Returns:
+        tuple: (min_temp, max_temp) comfort range
+    """
+    try:
+        # Convert month to Japanese format
+        month_japanese = f"{month}月"
+
+        # Load the 制御マスタ sheet directly to get month-specific data
+        import os
+
+        from config.utils import get_data_path
+
+        master_dir = get_data_path("master_data_path")
+        excel_path = os.path.join(
+            master_dir, f"MASTER_{master_data['store_info']['name']}.xlsx"
+        )
+
+        if not os.path.exists(excel_path):
+            print(f"[get_comfort_range] Excel file not found: {excel_path}")
+            return (22.0, 25.0)  # Default comfort range
+
+        # Read 制御マスタ sheet
+        control_master_df = pd.read_excel(excel_path, sheet_name="制御マスタ")
+
+        # Filter for specific zone and month
+        zone_month_data = control_master_df[
+            (control_master_df["制御区分"] == zone)
+            & (control_master_df["月"] == month_japanese)
+        ]
+
+        if len(zone_month_data) == 0:
+            print(
+                f"[get_comfort_range] No data found for zone {zone}, month {month_japanese}"
+            )
+            return (22.0, 25.0)  # Default comfort range
+
+        row = zone_month_data.iloc[0]
+        min_temp = (
+            float(row["目標室内温度下限"])
+            if pd.notna(row["目標室内温度下限"])
+            else 22.0
+        )
+        max_temp = (
+            float(row["目標室内温度上限"])
+            if pd.notna(row["目標室内温度上限"])
+            else 25.0
+        )
+
+        print(
+            f"[get_comfort_range] Zone {zone}, Month {month_japanese}: comfort range {min_temp}-{max_temp}°C"
+        )
+        return (min_temp, max_temp)
+
+    except Exception as e:
+        print(f"[get_comfort_range] Error getting comfort range: {e}")
+        return (22.0, 25.0)  # Default comfort range
+
+
+def get_zone_operating_hours(master_data: dict, zone: str) -> tuple[int, int]:
+    """
+    Extract operating hours (start_time, end_time) for a given zone from master data.
+
+    Args:
+        master_data: Master data dictionary from get_complete_master_data()
+        zone: Zone name (e.g., "Area 1", "Area 2", etc.)
+
+    Returns:
+        tuple: (start_hour, end_hour) in 24-hour format (0-23)
+    """
+    try:
+        if zone not in master_data.get("zones", {}):
+            print(f"[get_zone_operating_hours] Zone {zone} not found in master data")
+            return (7, 20)  # Default operating hours 7:00-20:00
+
+        zone_data = master_data["zones"][zone]
+        start_time = zone_data.get("start_time", "07:00")
+        end_time = zone_data.get("end_time", "20:00")
+
+        # Parse time strings (format: "HH:MM")
+        start_hour = int(start_time.split(":")[0])
+        end_hour = int(end_time.split(":")[0])
+
+        print(
+            f"[get_zone_operating_hours] Zone {zone}: operating hours {start_hour}:00-{end_hour}:00"
+        )
+        return (start_hour, end_hour)
+
+    except Exception as e:
+        print(
+            f"[get_zone_operating_hours] Error getting operating hours for zone {zone}: {e}"
+        )
+        return (7, 20)  # Default operating hours
+
+
+def master_data_loader_runner(store_name: str) -> Optional[dict]:
+    """
+    Extract complete Excel master data from consolidated 制御マスタ sheet for current month
+
+    Args:
+        store_name: ストア名
+
+    Returns:
+        dict: マスタデータ
+    """
+    # Extract complete Excel master data from consolidated 制御マスタ sheet for current month
+    complete_excel_master_data = None
+    try:
+
+        excel_loader = MasterDataLoader(store_name)
+        excel_master_data = excel_loader.get_complete_master_data()
+
+        if excel_master_data:
+            print(
+                f"[RunOptimization] Using consolidated Excel master data for current month"
+            )
+            print(
+                f"[RunOptimization] Excel master data zones: {list(excel_master_data.get('zones', {}).keys())}"
+            )
+            print(
+                f"[RunOptimization] Store info: {excel_master_data.get('store_info', {})}"
+            )
+            return excel_master_data
+        else:
+            print(f"[RunOptimization] ERROR: No consolidated Excel master data found")
+            return None
+    except Exception as e:
+        print(f"[RunOptimization] ERROR getting consolidated Excel master data: {e}")
+        return None

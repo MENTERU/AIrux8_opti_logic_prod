@@ -13,7 +13,10 @@ local_paths:
   folder_id: "11WsqJyj0yq8AVqU5qQiRKmSxiR2_A_9E"
   encoding: "utf-8"
 
+
+# ------------------------------------------------------------
 # 旧Google Drive設定（現在使用停止中）
+# ------------------------------------------------------------
 remote_paths:
   # Google Driveのパス設定（編集不要）
   win_base_path: "G:/"

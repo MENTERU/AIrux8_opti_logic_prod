@@ -36,7 +36,7 @@ class DataPreprocessor:
         if not cols:
             return None, None
         col = cols[0]
-        df[col] = pd.to_datetime(df[col], utc=True).dt.tz_localize(None).dt.floor("T")
+        df[col] = pd.to_datetime(df[col], utc=True).dt.tz_localize(None).dt.floor("min")
         return df, col
 
     @staticmethod
@@ -81,12 +81,16 @@ class DataPreprocessor:
             )  # Show first 3 files
 
         ac = (
-            pd.concat([pd.read_csv(f) for f in ac_files], ignore_index=True)
+            pd.concat(
+                [pd.read_csv(f, low_memory=False) for f in ac_files], ignore_index=True
+            )
             if ac_files
             else None
         )
         pm = (
-            pd.concat([pd.read_csv(f) for f in pm_files], ignore_index=True)
+            pd.concat(
+                [pd.read_csv(f, low_memory=False) for f in pm_files], ignore_index=True
+            )
             if pm_files
             else None
         )
@@ -297,6 +301,8 @@ class DataPreprocessor:
         if dataframe is None:
             return None
         dataframe = self._rm_dup(dataframe, datetime_column)
+        # Ensure we have a copy to avoid SettingWithCopyWarning
+        dataframe = dataframe.copy()
         # Total_kWh列を先に作成してから外れ値除去
         phase_columns = [col for col in dataframe.columns if col.startswith("Phase")]
         if phase_columns:
@@ -473,3 +479,72 @@ class DataPreprocessor:
         # 月別温度レンジ分析Excel出力
         if export_temp_range_stats:
             self._export_temp_range_stats(ac_control_data)
+
+
+def preprocessing_runner(
+    store_name: str,
+    store_master_file: dict = None,
+    weather_api_key: str = None,
+    temperature_std_multiplier: float = 5.0,
+    power_std_multiplier: float = 5.0,
+    export_temp_range_stats: bool = True,
+):
+    """
+    前処理のみを実行
+
+    Args:
+        weather_api_key: Weather API キー
+        temperature_std_multiplier: 温度データの外れ値判定係数
+        power_std_multiplier: 電力データの外れ値判定係数
+
+    Returns:
+        bool: 成功した場合True
+    """
+    if store_master_file is None:
+        print("[Preprocess] マスタ未読込")
+        return False
+
+    print("[Preprocess] 前処理のみ実行開始...")
+
+    # Get coordinates from store_master_file
+    coordinates = store_master_file.get("store_info", {}).get("coordinates")
+    if coordinates is None:
+        print(f"[Preprocess] ERROR: No coordinates provided")
+        return False
+    else:
+        print(f"[Preprocess] Using provided coordinates: {coordinates}")
+
+    # 前処理の実行
+    preprocessor = DataPreprocessor(store_name)
+    ac_raw_data, pm_raw_data = preprocessor.load_raw()
+    ac_processed_data = preprocessor.preprocess_ac(
+        ac_raw_data, temperature_std_multiplier
+    )
+    pm_processed_data = preprocessor.preprocess_pm(pm_raw_data, power_std_multiplier)
+
+    # 天候データの処理
+    weather_file = os.path.join(
+        preprocessor.output_dir, f"weather_processed_{store_name}.csv"
+    )
+    if os.path.exists(weather_file):
+        print(f"[Preprocess] キャッシュされた天候データを使用: {weather_file}")
+        historical_weather_data = pd.read_csv(weather_file)
+        if "datetime" in historical_weather_data.columns:
+            historical_weather_data["datetime"] = pd.to_datetime(
+                historical_weather_data["datetime"]
+            )
+    else:
+        print("[Preprocess] APIから天候データを取得...")
+        historical_weather_data = preprocessor._fetch_historical_weather(
+            ac_processed_data, pm_processed_data, weather_api_key, coordinates
+        )
+
+    # データの保存
+    preprocessor.save(
+        ac_processed_data,
+        pm_processed_data,
+        historical_weather_data,
+        export_temp_range_stats=export_temp_range_stats,
+    )
+    print("[Preprocess] 前処理完了")
+    return True
