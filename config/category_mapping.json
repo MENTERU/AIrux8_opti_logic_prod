@@ -10,11 +10,11 @@
     "FAN": 3
   },
   "A/C Fan Speed": {
-    "Auto": 0,
-    "Low": 1,
-    "Medium": 2,
-    "High": 3,
-    "Top": 4
+    "AUTO": 0,
+    "LOW": 1,
+    "MEDIUM": 2,
+    "HIGH": 3,
+    "TOP": 4
   },
   "A/C Status": {
     "OFF": 0,

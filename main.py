@@ -3,10 +3,15 @@
 # =============================================================================
 
 import argparse
+import logging
+import os
 import sys
+from datetime import datetime, timedelta
 from typing import Optional
 
 from config.private_information import WEATHER_API_KEY
+from config.utils import get_data_path
+from optimization.optimizer_runner import OptimizerRunner
 from processing.aggregator import aggregation_runner
 from processing.preprocessor import preprocessing_runner
 from processing.utilities.master_data_loader import master_data_loader_runner
@@ -30,6 +35,7 @@ def parse_arguments():
     )
     parser.add_argument("--preprocess-only", action="store_true", help="前処理のみ実行")
     parser.add_argument("--aggregate-only", action="store_true", help="集約のみ実行")
+    parser.add_argument("--optimize", action="store_true", help="最適化のみ実行")
     parser.add_argument("--start-date", type=str, help="最適化開始日 (YYYY-MM-DD形式)")
     parser.add_argument("--end-date", type=str, help="最適化終了日 (YYYY-MM-DD形式)")
 
@@ -90,31 +96,40 @@ def run_optimization_for_store(
         elif execution_mode == "optimize":
             print("=" * 50)
             print("🔄 最適化のみ実行")
-            # Get target date from environment or default to tomorrow
-            target_date = os.environ.get(
-                "TARGET_DATE", (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-            )
-            print.info(f"Optimizing for date: {target_date}")
+
+            # Use provided dates or default to tomorrow
+            if start_date is None:
+                start_date = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+            if end_date is None:
+                end_date = start_date
+
+            logging.info(f"Optimizing for period: {start_date} to {end_date}")
 
             try:
                 # Initialize optimization runner
-                print.info("Initializing Optimization Runner...")
-                runner = OptimizationRunner(data_dir=PREPROCESSED_DATA_DIR)
+                logging.info("Initializing Optimization Runner...")
+                runner = OptimizerRunner(store_name=store_name)
 
-                # Load historical data
-                print.info("Loading historical HVAC data...")
-                runner.load_all_data(target_date=target_date)
+                # Run optimization (this will load data and run optimization)
+                logging.info(f"Running optimization for {start_date} to {end_date}...")
+                results = runner.run_optimization(start_date, end_date)
 
-                # Run complete optimization
-                print.info(f"Running optimization for {target_date}...")
-                results = runner.run_optimization(target_date)
-
-                print("Optimization completed successfully!")
-                return 0
+                if results.get("status") == "success":
+                    # Save results
+                    output_path = runner.save_results_to_csv(start_date, end_date)
+                    print(f"✅ Optimization completed successfully!")
+                    print(f"📁 Results saved to: {output_path}")
+                    return True
+                else:
+                    print(
+                        f"❌ Optimization failed: {results.get('error', 'Unknown error')}"
+                    )
+                    return False
 
             except Exception as e:
-                print(f"Optimization failed: {e}")
-                return 1
+                print(f"❌ Optimization failed: {e}")
+                logging.error(f"Optimization error: {e}", exc_info=True)
+                return False
 
         else:  # full
             print("🔄 フルパイプライン実行")
@@ -129,6 +144,12 @@ def run_optimization_for_store(
 
 def main():
     """メイン実行関数"""
+    # Setup logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+
     # コマンドライン引数の解析
     args = parse_arguments()
 
@@ -138,6 +159,8 @@ def main():
         execution_modes.append("preprocess")
     if args.aggregate_only:
         execution_modes.append("aggregate")
+    if args.optimize:
+        execution_modes.append("optimize")
 
     # store_name
     if args.store is None:
