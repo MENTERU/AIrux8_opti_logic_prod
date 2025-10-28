@@ -29,23 +29,22 @@ class Optimizer:
     best-performing settings that minimize power consumption while maintaining comfort.
     """
 
-    def __init__(self):
+    def __init__(self, use_operating_hours: bool = True):
         """
         Initialize the Optimizer with configuration.
 
         Args:
-            config: Optional configuration dictionary to override defaults
+            use_operating_hours: If True, filter by zone operating hours.
+                                 If False, optimize for all 24 hours.
         """
         # Configuration Constants
         self.TARGET_INDOOR_TEMP = 26.0  # default in case there is no gategory mapping
         self.WEATHER_WEIGHTS = {"temperature": 0.7, "solar_radiation": 0.3}
-        self.TIME_WEIGHTS = {
-            "morning": {"temp": 0.8, "power": 0.2},
-            "afternoon": {"temp": 0.5, "power": 0.5},
-            "evening": {"temp": 0.3, "power": 0.7},
-        }
         self.TEMP_TOLERANCE = 0.5  # ±0.5°C for weather matching
         # self.SOLAR_TOLERANCE = 100.0  # ±100 W/m² for solar radiation matching
+
+        # Operating hours flag
+        self.use_operating_hours = use_operating_hours
 
         # Load category mappings
         self.category_mappings = self._load_category_mappings()
@@ -190,7 +189,6 @@ class Optimizer:
         zone_data = historical_df[historical_df["zone"] == zone].copy()
 
         if len(zone_data) == 0:
-            logging.warning(f"No historical data found for zone {zone}")
             return pd.DataFrame()
 
         # Extract forecast values
@@ -204,27 +202,16 @@ class Optimizer:
         same_hour_data = zone_data[zone_data["hour"] == forecast_hour].copy()
 
         if len(same_hour_data) == 0:
-            logging.warning(
-                f"No historical data found for zone {zone} at hour {forecast_hour}"
-            )
             return pd.DataFrame()
 
         # Filter by similar weather conditions
         temp_diff = abs(same_hour_data["Outdoor Temp."] - forecast_temp)
         solar_diff = abs(same_hour_data["Solar Radiation"] - forecast_solar)
 
-        # TODO: Keep for now and discuss with team if we need to add solar radiation tolerance
-        # weather_similar_mask = (temp_diff <= self.TEMP_TOLERANCE) & (
-        #     solar_diff <= self.SOLAR_TOLERANCE
-        # )
         weather_similar_mask = temp_diff <= self.TEMP_TOLERANCE
-
         similar_hist_data = same_hour_data[weather_similar_mask].copy()
 
         if len(similar_hist_data) == 0:
-            logging.warning(
-                f"No similar weather patterns found for zone {zone} at hour {forecast_hour}"
-            )
             return pd.DataFrame()
 
         # Calculate similarity score using z-score normalization
@@ -261,10 +248,6 @@ class Optimizer:
         # Sort by similarity score and return top N
         top_similar = similar_hist_data.nsmallest(n_top, "similarity_score")
 
-        logging.info(
-            f"Found {len(top_similar)} similar patterns for zone {zone} at hour {forecast_hour}"
-        )
-
         return top_similar
 
     def _filter_by_comfort(
@@ -295,13 +278,14 @@ class Optimizer:
 
         filtered_patterns = patterns_df[comfort_mask].copy()
 
-        logging.info(
-            f"Filtered {len(filtered_patterns)}/{len(patterns_df)} patterns for zone {zone} within comfort range {min_temp}-{max_temp}°C"
-        )
+        # Calculate statistics for logging (silently track, show in summary)
+        if len(filtered_patterns) == 0 and len(patterns_df) > 0:
+            pass  # Details shown in summary
 
+        # return filtered_patterns
         return filtered_patterns
 
-    def _score_and_select_best(
+    def _select_best_pattern(
         self,
         patterns_df: pd.DataFrame,
         hour: int,
@@ -310,7 +294,7 @@ class Optimizer:
         master_data: dict,
     ) -> Optional[pd.Series]:
         """
-        Score patterns and select the best one based on power and temperature.
+        Select the pattern with the lowest adjusted power consumption.
 
         Args:
             patterns_df: DataFrame with historical patterns
@@ -325,58 +309,8 @@ class Optimizer:
         if len(patterns_df) == 0:
             return None
 
-        # Determine time period
-        if 5 <= hour <= 11:
-            period = "morning"
-        elif 12 <= hour <= 16:
-            period = "afternoon"
-        elif 17 <= hour <= 23:
-            period = "evening"
-        else:
-            period = "morning"  # Default fallback
-
-        weights = self.TIME_WEIGHTS[period]
-
-        # Get zone-specific target temperature from master data
-        target_temp = self._get_zone_target_temp(zone, month, master_data)
-
-        # Calculate temperature deviation from target
-        patterns_df["temp_diff"] = abs(patterns_df["Indoor Temp."] - target_temp)
-
-        # Calculate z-score normalized scores
-        power_mean, power_std = (
-            patterns_df["adjusted_power"].mean(),
-            patterns_df["adjusted_power"].std(),
-        )
-        temp_diff_mean, temp_diff_std = (
-            patterns_df["temp_diff"].mean(),
-            patterns_df["temp_diff"].std(),
-        )
-
-        # Normalize scores
-        patterns_df["power_score"] = (
-            (patterns_df["adjusted_power"] - power_mean) / power_std
-            if power_std > 0
-            else 0
-        )
-        patterns_df["temp_score"] = (
-            (patterns_df["temp_diff"] - temp_diff_mean) / temp_diff_std
-            if temp_diff_std > 0
-            else 0
-        )
-
-        # Combined score (lower is better)
-        patterns_df["combined_score"] = (
-            weights["power"] * patterns_df["power_score"]
-            + weights["temp"] * patterns_df["temp_score"]
-        )
-
-        # Select best pattern (minimum combined score)
-        best_pattern = patterns_df.loc[patterns_df["combined_score"].idxmin()]
-
-        logging.info(
-            f"Selected best pattern for hour {hour} ({period}): power={best_pattern['adjusted_power']:.0f}W, temp={best_pattern['Indoor Temp.']:.1f}°C, score={best_pattern['combined_score']:.3f}"
-        )
+        # Select pattern with lowest adjusted_power
+        best_pattern = patterns_df.nsmallest(1, "adjusted_power").iloc[0]
 
         return best_pattern
 
@@ -400,23 +334,54 @@ class Optimizer:
             DataFrame with optimization results for the zone
         """
         # Get zone operating hours from master data
-        start_hour, end_hour = get_zone_operating_hours(master_data, zone)
+        if self.use_operating_hours:
+            start_hour, end_hour = get_zone_operating_hours(master_data, zone)
+        else:
+            start_hour, end_hour = 0, 24  # All 24 hours
 
-        logging.info(
-            f"Optimizing zone {zone} for {len(forecast_df)} forecast hours (operating hours: {start_hour}:00-{end_hour}:00)"
-        )
+        # Print comfort range once per zone (get from first forecast row)
+        if len(forecast_df) > 0:
+            first_forecast_month = pd.to_datetime(forecast_df.iloc[0]["datetime"]).month
+            comfort_range = get_comfort_range(master_data, zone, first_forecast_month)
+            print(
+                f"[Optimizer] {zone}: 快適範囲 {comfort_range[0]}-{comfort_range[1]}°C"
+            )
 
         results = []
+        stats = {
+            "total_hours": 0,
+            "outside_op_hours": 0,
+            "no_similar_patterns": 0,
+            "no_comfort_patterns": 0,
+            "no_best_pattern": 0,
+            "success": 0,
+        }
+
+        # Track detailed failures with timestamps and reasons
+        detailed_failures = {
+            "outside_op": [],
+            "no_patterns": [],
+            "no_comfort": [],
+            "no_best": [],
+        }
+
+        # Track comfort filter details for showing why filter was too strict
+        comfort_filter_details = []
+
+        # Track pattern counts for each hour for detailed reporting
+        hourly_stats = []
 
         for _, forecast_row in forecast_df.iterrows():
             forecast_datetime = pd.to_datetime(forecast_row["datetime"])
             month = forecast_datetime.month
             hour = forecast_datetime.hour
+            stats["total_hours"] += 1
 
-            # Check if current hour is within operating hours for the zone
-            if not (start_hour <= hour < end_hour):
-                logging.debug(
-                    f"Skipping hour {hour} for zone {zone} (outside operating hours {start_hour}:00-{end_hour}:00)"
+            # Check if current hour is within operating hours for the zone (only if flag is enabled)
+            if self.use_operating_hours and not (start_hour <= hour < end_hour):
+                stats["outside_op_hours"] += 1
+                detailed_failures["outside_op"].append(
+                    f"{forecast_datetime.strftime('%m/%d %H:00')}"
                 )
                 continue
 
@@ -424,34 +389,55 @@ class Optimizer:
             similar_patterns = self._find_similar_patterns(
                 historical_df, forecast_row, zone, n_top=20
             )
+            similar_count = len(similar_patterns)
 
             if len(similar_patterns) == 0:
-                logging.warning(
-                    f"No similar patterns found for zone {zone} at {forecast_datetime}"
+                stats["no_similar_patterns"] += 1
+                detailed_failures["no_patterns"].append(
+                    f"{forecast_datetime.strftime('%m/%d %H:00')}"
                 )
                 continue
 
             # Step 4: Filter by comfort range for the zone
+            min_temp, max_temp = get_comfort_range(master_data, zone, month)
             comfort_patterns = self._filter_by_comfort(
                 similar_patterns, zone, month, master_data
             )
+            comfort_count = len(comfort_patterns)
 
             if len(comfort_patterns) == 0:
-                logging.warning(
-                    f"No comfort patterns found for zone {zone} at {forecast_datetime}"
-                )
+                stats["no_comfort_patterns"] += 1
+                timestamp_str = forecast_datetime.strftime("%m/%d %H:00")
+                detailed_failures["no_comfort"].append(timestamp_str)
+
+                # Capture why filter failed
+                if len(similar_patterns) > 0:
+                    hist_min = similar_patterns["Indoor Temp."].min()
+                    hist_max = similar_patterns["Indoor Temp."].max()
+                    comfort_filter_details.append(
+                        {
+                            "timestamp": timestamp_str,
+                            "required": f"{min_temp}-{max_temp}°C",
+                            "actual": f"{hist_min:.1f}-{hist_max:.1f}°C",
+                            "similar": similar_count,
+                            "comfort": comfort_count,
+                        }
+                    )
                 continue
 
             # Step 5: Score and select best pattern
-            best_pattern = self._score_and_select_best(
+            best_pattern = self._select_best_pattern(
                 comfort_patterns, hour, zone, month, master_data
             )
 
             if best_pattern is None:
-                logging.warning(
-                    f"No best pattern selected for zone {zone} at {forecast_datetime}"
+                stats["no_best_pattern"] += 1
+                detailed_failures["no_best"].append(
+                    f"{forecast_datetime.strftime('%m/%d %H:00')}"
                 )
                 continue
+
+            stats["success"] += 1
 
             # Extract recommended settings
             units_count = best_pattern["A/C ON/OFF"]
@@ -466,7 +452,6 @@ class Optimizer:
                 "power": best_pattern["adjusted_power"],
                 "indoor_temp": best_pattern["Indoor Temp."],
                 "similarity_score": round(best_pattern["similarity_score"], 2),
-                "combined_score": round(best_pattern["combined_score"], 2),
                 "hist_datetime_used": best_pattern["Datetime"],
                 "forecast_outdoor_temp": forecast_row["Outdoor Temp."],
                 "forecast_solar_radiation": forecast_row["Solar Radiation"],
@@ -477,16 +462,54 @@ class Optimizer:
 
             results.append(result)
 
-        if not results:
-            logging.warning(
-                f"No optimization results for zone {zone} (operating hours: {start_hour}:00-{end_hour}:00)"
-            )
-            return pd.DataFrame()
-
         result_df = pd.DataFrame(results)
-        logging.info(
-            f"Optimization completed for zone {zone}: {len(result_df)} hours optimized (operating hours: {start_hour}:00-{end_hour}:00)"
-        )
+
+        # Calculate success rate
+        valid_hours = stats["total_hours"] - stats["outside_op_hours"]
+        success_rate = (stats["success"] / valid_hours * 100) if valid_hours > 0 else 0
+
+        # Print detailed summary
+        print(f"\n━━━━━ [{zone}] Summary ━━━━━")
+        print(f"✅ 成功: {len(result_df)}時間 ({success_rate:.0f}%)")
+
+        # Show summary of pattern filtering for failed hours
+        if len(comfort_filter_details) > 0:
+            total_similar = sum(d["similar"] for d in comfort_filter_details)
+            avg_similar = total_similar / len(comfort_filter_details)
+            print(
+                f"📊 失敗時間の平均: 類似パターン {avg_similar:.1f}件 → 快適範囲通過 0件"
+            )
+
+        if stats["outside_op_hours"] > 0:
+            print(f"⏰ 営業時間外: {stats['outside_op_hours']}時間")
+            if len(detailed_failures["outside_op"]) <= 10:
+                print(f"   {', '.join(detailed_failures['outside_op'])}")
+
+        if stats["no_similar_patterns"] > 0:
+            print(f"🔍 パターンなし: {stats['no_similar_patterns']}時間")
+            if len(detailed_failures["no_patterns"]) <= 10:
+                print(f"   {', '.join(detailed_failures['no_patterns'])}")
+
+        if stats["no_comfort_patterns"] > 0:
+            print(f"🌡️ 快適性なし: {stats['no_comfort_patterns']}時間")
+            if len(detailed_failures["no_comfort"]) <= 10:
+                # Show detailed reasons with counts
+                for detail in comfort_filter_details[:10]:
+                    print(
+                        f"   {detail['timestamp']}: 類似パターン={detail['similar']}件 → 快適範囲通過=0件 (必要={detail['required']}, 実際={detail['actual']})"
+                    )
+            elif len(detailed_failures["no_comfort"]) > 10:
+                # Show first few with details, then summary
+                for detail in comfort_filter_details[:5]:
+                    print(
+                        f"   {detail['timestamp']}: 類似パターン={detail['similar']}件 → 快適範囲通過=0件 (必要={detail['required']}, 実際={detail['actual']})"
+                    )
+                print(f"   ... and {len(detailed_failures['no_comfort']) - 5} more")
+
+        if stats["no_best_pattern"] > 0:
+            print(f"❌ 選択不可: {stats['no_best_pattern']}時間")
+
+        print("━" * 30)
 
         return result_df
 
@@ -504,14 +527,11 @@ class Optimizer:
         Returns:
             Combined DataFrame with optimization results for all zones
         """
-        logging.info("Starting optimization for all zones")
-
         # Load historical patterns
         historical_df = self.load_historical_patterns(features_csv_path)
 
         # Get list of all zones from historical data
         zones = sorted(historical_df["zone"].unique())
-        logging.info(f"Found zones to optimize: {zones}")
 
         all_results = []
 
@@ -524,7 +544,7 @@ class Optimizer:
                 all_results.append(zone_results)
 
         if not all_results:
-            logging.warning("No optimization results generated for any zone")
+            print("いずれのゾーンでも最適化結果は生成されませんでした")
             return pd.DataFrame()
 
         # Combine all results
@@ -535,13 +555,11 @@ class Optimizer:
             ["datetime", "zone"]
         ).reset_index(drop=True)
 
-        logging.info(
-            f"Optimization completed for all zones: {len(combined_results)} total results"
-        )
-        logging.info(f"Results summary by zone:")
+        print(f"\n=== 最適化サマリー ===")
+        print(f"合計結果: {len(combined_results)}時間")
         for zone in zones:
             zone_count = len(combined_results[combined_results["zone"] == zone])
-            logging.info(f"  {zone}: {zone_count} hours")
+            print(f"  {zone}: {zone_count}時間")
 
         # Convert to wide format
         wide_df = self._convert_to_wide_format(combined_results)
@@ -582,7 +600,6 @@ class Optimizer:
             "power",
             "indoor_temp",
             "similarity_score",
-            "combined_score",
             "hist_outdoor_temp",
             "hist_solar_radiation",
             "hist_indoor_temp",
@@ -608,17 +625,5 @@ class Optimizer:
         logging.info(
             f"Converted to wide format: {len(base_df)} rows, {len(base_df.columns)} columns"
         )
-        logging.info(f"Columns: {list(base_df.columns)}")
 
         return base_df
-
-
-def optimize_all_zones(
-    forecast_df: pd.DataFrame, features_csv_path: str, master_data: dict
-) -> pd.DataFrame:
-    """
-    Convenience function for backward compatibility.
-    Creates a Optimizer instance and runs optimization.
-    """
-    optimizer = Optimizer()
-    return optimizer.optimize_all_zones(forecast_df, features_csv_path, master_data)

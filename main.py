@@ -86,9 +86,6 @@ def run_optimization_for_store(
             aggregation_runner(
                 store_name=store_name,
                 store_master_file=store_master_file,
-                start_date=start_date,
-                end_date=end_date,
-                weather_api_key=WEATHER_API_KEY,
                 freq="1H",
             )
             print("✅ 集約完了")
@@ -97,12 +94,11 @@ def run_optimization_for_store(
             print("=" * 50)
             print("🔄 最適化のみ実行")
 
-            # Use provided dates or default to tomorrow
+            # Use provided dates or default to a test period
             if start_date is None:
-                start_date = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+                start_date = "2025-09-29"
             if end_date is None:
-                end_date = start_date
-
+                end_date = "2025-10-04"
             logging.info(f"Optimizing for period: {start_date} to {end_date}")
 
             try:
@@ -133,8 +129,49 @@ def run_optimization_for_store(
 
         else:  # full
             print("🔄 フルパイプライン実行")
-            # TODO: フルパイプライン実行
+            opt_start_date = start_date or end_date
+            opt_end_date = end_date or start_date
+
+            if opt_start_date is None and opt_end_date is None:
+                opt_start_date = "2025-09-29"
+                opt_end_date = "2025-10-04"
+            elif opt_start_date is None:
+                opt_start_date = opt_end_date
+            elif opt_end_date is None:
+                opt_end_date = opt_start_date
+
+            preprocess_success = preprocessing_runner(
+                store_name=store_name,
+                store_master_file=store_master_file,
+                weather_api_key=WEATHER_API_KEY,
+                temperature_std_multiplier=5.0,
+                power_std_multiplier=5.0,
+                export_temp_range_stats=False,
+            )
+            if not preprocess_success:
+                print("❌ フルパイプライン失敗: 前処理に失敗しました")
+                return False
+
+            aggregated_df = aggregation_runner(
+                store_name=store_name,
+                store_master_file=store_master_file,
+                freq="1H",
+            )
+            if aggregated_df is None or aggregated_df.empty:
+                print("❌ フルパイプライン失敗: 集約結果が空です")
+                return False
+
+            runner = OptimizerRunner(store_name=store_name)
+            optimization_results = runner.run_optimization(opt_start_date, opt_end_date)
+            if optimization_results.get("status") != "success":
+                print(
+                    f"❌ フルパイプライン失敗: {optimization_results.get('error', 'Unknown error')}"
+                )
+                return False
+
+            output_path = runner.save_results_to_csv(opt_start_date, opt_end_date)
             print("✅ フルパイプライン完了")
+            print(f"📁 結果保存先: {output_path}")
             return True
 
     except Exception as error:

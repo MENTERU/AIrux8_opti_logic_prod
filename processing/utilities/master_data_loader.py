@@ -371,9 +371,6 @@ def get_comfort_range(master_data: dict, zone: str, month: int) -> tuple[float, 
             else 25.0
         )
 
-        print(
-            f"[get_comfort_range] Zone {zone}, Month {month_japanese}: comfort range {min_temp}-{max_temp}°C"
-        )
         return (min_temp, max_temp)
 
     except Exception as e:

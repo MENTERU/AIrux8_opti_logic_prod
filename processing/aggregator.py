@@ -451,7 +451,7 @@ class AreaAggregator:
                             f"[AreaAggregator] {zone_name} - {column} デフォルト値({default_value})で置換: {int(unmapped_mask.sum())}件"
                         )
 
-                # TODO : need to revisit later 
+                # TODO : need to revisit later
                 # Ensure all NA values are handled before converting to integer
                 if dataframe[column].isna().any():
                     default_value = get_default_category_value(column)
@@ -591,18 +591,15 @@ def _save_weather_forecast(
 def aggregation_runner(
     store_name: str,
     store_master_file: dict,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    weather_api_key: Optional[str] = None,
     freq: str = "1H",
 ):
     """
     集約のみを実行
+    Weather data is automatically determined from preprocessed data.
 
     Args:
-        start_date: 開始日
-        end_date: 終了日
-        weather_api_key: Weather API キー
+        store_name: 店舗名
+        store_master_file: マスターデータ
         freq: 時間粒度
 
     Returns:
@@ -640,38 +637,35 @@ def aggregation_runner(
         print("[Aggregate] 処理済みデータが見つかりません")
         return None
 
-    # 座標情報をマスタから取得
-    if coordinates is None:
-        coordinates = store_master_file.get("store_info", {}).get("coordinates")
-
-    # 天候データの取得
-    weather_df = None
-    if start_date and end_date:
-        weather_df = _load_weather_forecast(
-            start_date, end_date, plan_dir, weather_api_key, coordinates
-        )
-
-    # 天候データの統合
-    combined_weather_df = None
-    if historical_weather_data is not None and not historical_weather_data.empty:
-        if weather_df is not None and not weather_df.empty:
-            historical_max_date = pd.to_datetime(
-                historical_weather_data["datetime"]
-            ).max()
-            weather_df_filtered = weather_df[
-                pd.to_datetime(weather_df["datetime"]) > historical_max_date
-            ]
-            if not weather_df_filtered.empty:
-                combined_weather_df = pd.concat(
-                    [historical_weather_data, weather_df_filtered],
-                    ignore_index=True,
-                )
-            else:
-                combined_weather_df = historical_weather_data
-        else:
-            combined_weather_df = historical_weather_data
+    # Determine date range from preprocessed data (not from optimization parameters)
+    # Use AC data datetime as primary, fallback to power meter data
+    if not ac_processed_data.empty and "Datetime" in ac_processed_data.columns:
+        ac_processed_data["Datetime"] = pd.to_datetime(ac_processed_data["Datetime"])
+        data_start_date = ac_processed_data["Datetime"].min()
+        data_end_date = ac_processed_data["Datetime"].max()
+    elif not pm_processed_data.empty and "Datetime" in pm_processed_data.columns:
+        pm_processed_data["Datetime"] = pd.to_datetime(pm_processed_data["Datetime"])
+        data_start_date = pm_processed_data["Datetime"].min()
+        data_end_date = pm_processed_data["Datetime"].max()
     else:
-        combined_weather_df = weather_df
+        print("[Aggregate] ERROR: No datetime data found in preprocessed files")
+        return None
+
+    print(
+        f"[Aggregate] Data date range: {data_start_date.date()} to {data_end_date.date()}"
+    )
+
+    # If historical weather data exists, use it and ignore any API calls
+    if historical_weather_data is not None and not historical_weather_data.empty:
+        print("[Aggregate] Using existing historical weather data from CSV")
+        combined_weather_df = historical_weather_data
+    else:
+        # No historical weather exists - this is an error since preprocessing should have created it
+        print(
+            "[Aggregate] ERROR: Historical weather data not found. "
+            "Please run the preprocessor module first to generate weather data."
+        )
+        return None
 
     # 集約の実行
     # Use master data from constructor
