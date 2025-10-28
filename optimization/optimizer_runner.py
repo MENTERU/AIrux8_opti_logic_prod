@@ -33,7 +33,6 @@ class OptimizerRunner:
         self.master_data: Dict[str, Any] = {}
         self.weather_data: pd.DataFrame = pd.DataFrame()
         self.results: Dict[str, Any] = {}
-        self.optimizer = Optimizer()
 
     def load_weather_data(self, start_date: str, end_date: str = None):
         """
@@ -80,6 +79,30 @@ class OptimizerRunner:
 
         api_key = WEATHER_API_KEY
 
+        # Check for cached weather forecast first
+        output_data_path = get_data_path("output_data_path")
+        plan_dir = os.path.join(output_data_path, self.store_name)
+
+        start_clean = start_date.replace("-", "")
+        end_clean = end_date.replace("-", "")
+        cached_filename = f"weather_forecast_{start_clean}_{end_clean}.csv"
+        cached_path = os.path.join(plan_dir, cached_filename)
+
+        if os.path.exists(cached_path):
+            logging.info(f"Loading cached weather forecast: {cached_path}")
+            try:
+                self.weather_data = pd.read_csv(cached_path)
+                if "datetime" in self.weather_data.columns:
+                    self.weather_data["datetime"] = pd.to_datetime(
+                        self.weather_data["datetime"]
+                    )
+                logging.info(
+                    f"Cached weather data loaded. Shape: {self.weather_data.shape}"
+                )
+                return
+            except Exception as e:
+                logging.warning(f"Error loading cached weather data: {e}")
+
         logging.info(f"Fetching weather forecast from {start_date} to {end_date}")
         logging.info(f"Using coordinates: {coordinates}")
 
@@ -104,6 +127,14 @@ class OptimizerRunner:
             raise ValueError(
                 f"Failed to fetch weather data for period {start_date} to {end_date}"
             )
+
+        # Save to cache
+        try:
+            os.makedirs(plan_dir, exist_ok=True)
+            self.weather_data.to_csv(cached_path, index=False, encoding="utf-8-sig")
+            logging.info(f"Weather forecast cached to: {cached_path}")
+        except Exception as e:
+            logging.warning(f"Error saving weather forecast to cache: {e}")
 
         logging.info(f"Loaded master data for store {self.store_name}")
         logging.info(
@@ -166,6 +197,7 @@ class OptimizerRunner:
             self.load_weather_data(start_date, end_date)
 
             # Run optimization
+            self.optimizer = Optimizer(use_operating_hours=False)
             result_df = self.optimizer.optimize_all_zones(
                 forecast_df=self.weather_data,
                 features_csv_path=self.features_csv_path,
@@ -199,13 +231,13 @@ class OptimizerRunner:
             }
 
     def save_results_to_csv(
-        self, start_date: str, end_date: str = None, filename: str = None
+        self, start_date: str = None, end_date: str = None, filename: str = None
     ) -> str:
         """
         Save optimization results to CSV.
 
         Args:
-            start_date: Start date in YYYY-MM-DD format
+            start_date: Start date in YYYY-MM-DD format (uses result data if None)
             end_date: End date in YYYY-MM-DD format (defaults to start_date if not provided)
             filename: Optional custom CSV filename
 
@@ -215,6 +247,12 @@ class OptimizerRunner:
         if "optimization_result" not in self.results:
             raise ValueError("No optimization results to save. Run optimization first.")
 
+        # Use dates from results if not provided
+        if start_date is None:
+            start_date = self.results.get("start_date", "unknown")
+        if end_date is None:
+            end_date = self.results.get("end_date", start_date)
+
         # Create output directory in Clea folder
         output_data_path = get_data_path("output_data_path")
         output_dir = os.path.join(output_data_path, self.store_name)
@@ -222,9 +260,6 @@ class OptimizerRunner:
 
         # Generate filename with start and end dates
         if filename is None:
-            if end_date is None:
-                end_date = start_date
-
             # Convert dates to YYYYMMDD format
             start_date_formatted = start_date.replace("-", "")
             end_date_formatted = end_date.replace("-", "")

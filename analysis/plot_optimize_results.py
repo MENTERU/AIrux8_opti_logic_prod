@@ -13,10 +13,24 @@ from plotly.subplots import make_subplots
 
 def load_optimization_results():
     """Load the optimization results with historical weather data."""
-    current_dir = os.path.dirname(os.path.abspath(__file__))    
+    current_dir = os.path.dirname(os.path.abspath(__file__))
     # Try to load the enhanced results first, fallback to original
-    enhanced_path = os.path.join(current_dir, "..", "data", "04_PlanningData", "Clea", "optimized_results_with_historical_weather.csv")
-    original_path = os.path.join(current_dir, "..", "data", "04_PlanningData", "Clea", "optimized_results_20250929_20251004.csv")
+    enhanced_path = os.path.join(
+        current_dir,
+        "..",
+        "data",
+        "04_PlanningData",
+        "Clea",
+        "optimized_results_with_historical_weather.csv",
+    )
+    original_path = os.path.join(
+        current_dir,
+        "..",
+        "data",
+        "04_PlanningData",
+        "Clea",
+        "optimized_results_20250929_20251004.csv",
+    )
 
     if os.path.exists(enhanced_path):
         print(f"Loading enhanced results from: {enhanced_path}")
@@ -46,15 +60,16 @@ def create_comprehensive_dashboard(df):
     # Define consistent colors for all data types
     color_scheme = {
         "forecast_temp": "blue",
-        "historical_temp": "lightblue",
+        "hist_outdoor_temp": "orange",
+        "indoor_temp": "green",
         "ac_set_temp": "red",
         "power": "brown",
     }
 
-    # Create a large subplot layout
+    # Create a large subplot layout - one graph per row
     fig = make_subplots(
-        rows=3,
-        cols=2,
+        rows=6,
+        cols=1,
         subplot_titles=[
             "Optimization Coverage Summary",
             "Area 1 - Weather & Optimization",
@@ -66,9 +81,12 @@ def create_comprehensive_dashboard(df):
         vertical_spacing=0.08,
         horizontal_spacing=0.1,
         specs=[
-            [{"secondary_y": False}, {"secondary_y": True}],
-            [{"secondary_y": True}, {"secondary_y": True}],
-            [{"secondary_y": True}, {"secondary_y": True}],
+            [{"secondary_y": False}],
+            [{"secondary_y": True}],
+            [{"secondary_y": True}],
+            [{"secondary_y": True}],
+            [{"secondary_y": True}],
+            [{"secondary_y": True}],
         ],
     )
 
@@ -97,20 +115,15 @@ def create_comprehensive_dashboard(df):
         col=1,
     )
 
-    # 2-6. Individual zone plots (rows 2-3, cols 1-2)
+    # 2-6. Individual zone plots (rows 2-6)
     for i, zone in enumerate(zones):
-        if i == 0:  # Area 1
-            row, col = 1, 2
-        elif i == 1:  # Area 2
-            row, col = 2, 1
-        elif i == 2:  # Area 3
-            row, col = 2, 2
-        elif i == 3:  # Area 4
-            row, col = 3, 1
-        elif i == 4:  # Break Room
-            row, col = 3, 2
-        elif i == 5:  # Meeting Room - skip since we removed the overview
+        # Skip Meeting Room - only showing first 5 areas
+        if i == 5:  # Meeting Room
             continue
+
+        # Row is i+2 (row 1 is coverage summary, row 2 is first zone)
+        row = i + 2
+        col = 1
 
         zone_set_temp_col = f"{zone}_set_temp"
         if zone_set_temp_col not in df.columns:
@@ -127,7 +140,7 @@ def create_comprehensive_dashboard(df):
                 x=zone_data["datetime"],
                 y=zone_data["forecast_outdoor_temp"],
                 mode="lines+markers",
-                name=f"{zone} Forecast Temp",
+                name=f"{zone} Forecast Outdoor Temp",
                 line=dict(color=color_scheme["forecast_temp"], width=2),
                 marker=dict(size=4),
                 showlegend=True,
@@ -137,7 +150,7 @@ def create_comprehensive_dashboard(df):
         )
 
         # Add historical outdoor temp if available
-        hist_temp_col = f"{zone}_historical_outdoor_temp"
+        hist_temp_col = f"{zone}_hist_outdoor_temp"
         if hist_temp_col in df.columns:
             hist_data = zone_data[zone_data[hist_temp_col].notna()]
             if len(hist_data) > 0:
@@ -146,10 +159,31 @@ def create_comprehensive_dashboard(df):
                         x=hist_data["datetime"],
                         y=hist_data[hist_temp_col],
                         mode="lines+markers",
-                        name=f"{zone} Historical Temp",
+                        name=f"{zone} Hist Outdoor Temp",
                         line=dict(
-                            color=color_scheme["historical_temp"], width=2, dash="dash"
+                            color=color_scheme["hist_outdoor_temp"],
+                            width=2,
+                            dash="dash",
                         ),
+                        marker=dict(size=4),
+                        showlegend=True,
+                    ),
+                    row=row,
+                    col=col,
+                )
+
+        # Add indoor temperature if available
+        indoor_temp_col = f"{zone}_indoor_temp"
+        if indoor_temp_col in df.columns:
+            indoor_data = zone_data[zone_data[indoor_temp_col].notna()]
+            if len(indoor_data) > 0:
+                fig.add_trace(
+                    go.Scatter(
+                        x=indoor_data["datetime"],
+                        y=indoor_data[indoor_temp_col],
+                        mode="lines+markers",
+                        name=f"{zone} Indoor Temp",
+                        line=dict(color=color_scheme["indoor_temp"], width=2),
                         marker=dict(size=4),
                         showlegend=True,
                     ),
@@ -193,8 +227,11 @@ def create_comprehensive_dashboard(df):
     # Update layout
     fig.update_layout(
         title="Comprehensive Optimization Analysis Dashboard",
-        height=1400,
+        height=2400,
         showlegend=True,
+        template="plotly_white",
+        paper_bgcolor="white",
+        plot_bgcolor="white",
         legend=dict(
             orientation="v",
             yanchor="top",
@@ -206,14 +243,22 @@ def create_comprehensive_dashboard(df):
     )
 
     # Update axes labels
-    fig.update_xaxes(title_text="Zone", row=1, col=1)
-    fig.update_yaxes(title_text="Coverage (%)", row=1, col=1)
+    fig.update_xaxes(title_text="Zone", row=1, col=1, gridcolor="lightgray")
+    fig.update_yaxes(title_text="Coverage (%)", row=1, col=1, gridcolor="lightgray")
 
-    for i in range(2, 4):
-        for j in range(1, 3):
-            fig.update_xaxes(title_text="DateTime", row=i, col=j)
-            fig.update_yaxes(title_text="Temperature (°C)", row=i, col=j)
-            fig.update_yaxes(title_text="Power (W)", secondary_y=True, row=i, col=j)
+    # Update axes for zone plots (rows 2-6)
+    for row in range(2, 7):
+        fig.update_xaxes(title_text="DateTime", row=row, col=1, gridcolor="lightgray")
+        fig.update_yaxes(
+            title_text="Temperature (°C)", row=row, col=1, gridcolor="lightgray"
+        )
+        fig.update_yaxes(
+            title_text="Power (W)",
+            secondary_y=True,
+            row=row,
+            col=1,
+            gridcolor="lightgray",
+        )
 
     return fig
 
@@ -235,7 +280,7 @@ def main():
     fig = create_comprehensive_dashboard(df)
 
     # Save single HTML file
-    output_file = f"{output_dir}/optimization_analysis_dashboard.html"
+    output_file = f"{output_dir}/optimization_plots.html"
     fig.write_html(output_file)
     print(f"  Saved: {output_file}")
 
