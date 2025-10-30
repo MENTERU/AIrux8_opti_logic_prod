@@ -4,6 +4,7 @@ from typing import List, Optional, Tuple
 
 import pandas as pd
 
+from config.utils import get_data_path
 from processing.utilities.category_mapping_loader import (
     get_default_category_value,
     map_category_series,
@@ -21,7 +22,6 @@ from processing.utilities.weatherapi_client import VisualCrossingWeatherAPIDataF
 class DataPreprocessor:
     def __init__(self, store_name: str):
         self.store_name = store_name
-        from config.utils import get_data_path
 
         self.data_dir = os.path.join(get_data_path("raw_data_path"), store_name)
         self.output_dir = os.path.join(get_data_path("processed_data_path"), store_name)
@@ -398,14 +398,13 @@ class DataPreprocessor:
         # 自動Excel出力処理 (AC_setvalue_range_analysis_*.xlsx)
         try:
             print("[DataPreprocessor] 自動Excel出力を開始します...")
+            # Get the master data path dynamically
+            master_data_dir = get_data_path("master_data_path")
+
             export_temp_range_stats(
                 ac_df=ac_control_data,
                 store_name=self.store_name,
-                output_dir=self.output_dir,
-            )
-            # Use the correct master data directory, not the preprocessed output directory
-            master_data_dir = os.path.join(
-                os.path.dirname(os.path.dirname(self.output_dir)), "01_MasterData"
+                output_dir=master_data_dir,
             )
             update_master_from_analysis(self.store_name, master_data_dir)
         except Exception as e:

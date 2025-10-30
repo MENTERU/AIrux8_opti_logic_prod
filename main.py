@@ -33,8 +33,8 @@ def parse_arguments():
     parser.add_argument(
         "--store", type=str, default="Clea", help="対象ストア(default:Clea)"
     )
-    parser.add_argument("--preprocess-only", action="store_true", help="前処理のみ実行")
-    parser.add_argument("--aggregate-only", action="store_true", help="集約のみ実行")
+    parser.add_argument("--preprocess", action="store_true", help="前処理のみ実行")
+    parser.add_argument("--aggregate", action="store_true", help="集約のみ実行")
     parser.add_argument("--optimize", action="store_true", help="最適化のみ実行")
     parser.add_argument("--start-date", type=str, help="最適化開始日 (YYYY-MM-DD形式)")
     parser.add_argument("--end-date", type=str, help="最適化終了日 (YYYY-MM-DD形式)")
@@ -75,7 +75,7 @@ def run_optimization_for_store(
                 weather_api_key=WEATHER_API_KEY,
                 temperature_std_multiplier=5.0,
                 power_std_multiplier=5.0,
-                export_temp_range_stats=False,
+                export_temp_range_stats=True,
             )
             print("✅ 前処理完了")
             return True
@@ -192,9 +192,9 @@ def main():
 
     # 実行モードの決定 (複数のフラグを組み合わせ可能)
     execution_modes = []
-    if args.preprocess_only:
+    if args.preprocess:
         execution_modes.append("preprocess")
-    if args.aggregate_only:
+    if args.aggregate:
         execution_modes.append("aggregate")
     if args.optimize:
         execution_modes.append("optimize")

@@ -104,20 +104,59 @@ class AreaAggregator:
                     # After categorical mapping, A/C ON/OFF is already numeric (0=OFF, 1=ON)
                     # So we can use it directly for counting units ON
 
-                    g = (
-                        ac_sub.groupby("Datetime")
+                    # Debug: check how many samples per unit per hour exist (inflates raw sums)
+                    dup_check = (
+                        ac_sub.groupby(["Datetime", "A/C Name"])
+                        .size()
+                        .reset_index(name="samples_per_hour")
+                    )
+                    if not dup_check.empty:
+                        print(
+                            f"[AreaAggregator] Zone {zone_name}: Max samples per unit per hour before normalization = {dup_check['samples_per_hour'].max()}"
+                        )
+
+                    # 1) Normalize to per-unit-per-hour first so each unit contributes at most 0/1 per hour
+                    unit_hour = (
+                        ac_sub.groupby(["Datetime", "A/C Name"])
                         .agg(
                             {
-                                # TODO: Avgに変更すむ良いかどうか検討が必要。優先度低い
                                 "A/C Set Temperature": AreaAggregator._most_frequent,
-                                "Indoor Temp.": "mean",  # 学習は平均室温
-                                "A/C ON/OFF": "sum",  # Count of units ON
+                                "Indoor Temp.": "mean",
+                                # After categorical mapping ON/OFF is 0/1; use max to collapse within-hour samples
+                                "A/C ON/OFF": "max",
                                 "A/C Mode": AreaAggregator._most_frequent,
                                 "A/C Fan Speed": AreaAggregator._most_frequent,
                             }
                         )
                         .reset_index()
                     )
+
+                    # 2) Aggregate to zone per hour
+                    g = (
+                        unit_hour.groupby("Datetime")
+                        .agg(
+                            {
+                                "A/C Set Temperature": AreaAggregator._most_frequent,
+                                "Indoor Temp.": "mean",
+                                # Sum across units now equals number of units ON (bounded by physical units)
+                                "A/C ON/OFF": "sum",
+                                "A/C Mode": AreaAggregator._most_frequent,
+                                "A/C Fan Speed": AreaAggregator._most_frequent,
+                            }
+                        )
+                        .reset_index()
+                    )
+
+                    # Debug: verify counts are reasonable after normalization
+                    if not g.empty:
+                        max_units_on = (
+                            int(g["A/C ON/OFF"].max())
+                            if "A/C ON/OFF" in g.columns
+                            else 0
+                        )
+                        print(
+                            f"[AreaAggregator] Zone {zone_name}: Max units ON per hour after normalization = {max_units_on} (total indoor units = {len(indoor_units)})"
+                        )
 
                     # Create A/C Status column based on ON/OFF count and Mode
                     # Status mapping: OFF=0, COOL=1, HEAT=2, FAN=3
