@@ -530,7 +530,8 @@ def preprocessing_runner(
             )
     except Exception:
         historical_weather_data = None
-    else:
+
+    if historical_weather_data is None:
         print("[Preprocess] APIから天候データを取得...")
         historical_weather_data = preprocessor._fetch_historical_weather(
             ac_processed_data, pm_processed_data, weather_api_key, coordinates

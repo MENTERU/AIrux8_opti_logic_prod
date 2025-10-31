@@ -31,7 +31,7 @@ class MasterDataLoader:
 
                 from service.storage import get_storage_client
 
-                 client = get_storage_client()
+                client = get_storage_client()
                 content = client.read_bytes(
                     f"01_MasterData/MASTER_{self.store_name}.xlsx"
                 )
