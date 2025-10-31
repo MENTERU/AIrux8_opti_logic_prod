@@ -12,36 +12,61 @@ class MasterDataLoader:
 
     def __init__(self, store_name: str):
         self.store_name = store_name
+        self._all_sheets: Optional[dict] = None
+        self._storage_backend = os.getenv("STORAGE_BACKEND", "local").lower()
 
-    def get_coordinates(self) -> Optional[str]:
-        """Get coordinates from Excel file for weather API calls"""
+    def _load_all_sheets(self) -> dict:
+        """Load and cache all sheets from the Excel master once.
+
+        Returns:
+            dict: Mapping of sheet name to DataFrame
+        """
+        if self._all_sheets is not None:
+            return self._all_sheets
+
+        from io import BytesIO
+
         from config.utils import get_data_path
 
         master_dir = get_data_path("master_data_path")
         excel_path = os.path.join(master_dir, f"MASTER_{self.store_name}.xlsx")
-        storage_backend = os.getenv("STORAGE_BACKEND", "local").lower()
 
         try:
-            if storage_backend == "gcs":
-                # Read from GCS
+            from service.storage import get_storage_client
+
+            client = get_storage_client()
+            if self._storage_backend == "gcs":
                 print(
-                    f"[MasterDataLoader] ExcelファイルをGCSから読み込み中: 01_MasterData/MASTER_{self.store_name}.xlsx"
+                    f"[MasterDataLoader] Reading all sheets via storage client (GCS): 01_MasterData/MASTER_{self.store_name}.xlsx"
                 )
-                from io import BytesIO
-
-                from service.storage import get_storage_client
-
-                client = get_storage_client()
-                content = client.read_bytes(
-                    f"01_MasterData/MASTER_{self.store_name}.xlsx"
-                )
-                facility_info_df = pd.read_excel(
-                    BytesIO(content), sheet_name="施設情報"
+                gcs_path = f"01_MasterData/MASTER_{self.store_name}.xlsx"
+                self._all_sheets = client.read_excel(
+                    gcs_path, sheet_name=None, engine="openpyxl"
                 )
             else:
-                print(f"[MasterDataLoader] Excelファイルを読み込み中: {excel_path}")
-                # Read the 施設情報 sheet (local filesystem)
-                facility_info_df = pd.read_excel(excel_path, sheet_name="施設情報")
+                print(
+                    f"[MasterDataLoader] Reading all sheets via storage client (local): {excel_path}"
+                )
+                self._all_sheets = client.read_excel(excel_path, sheet_name=None)
+
+            print(f"[MasterDataLoader] Cached sheets: {list(self._all_sheets.keys())}")
+            return self._all_sheets
+        except Exception as e:
+            print(f"[MasterDataLoader] Failed to load Excel sheets: {e}")
+            import traceback
+
+            traceback.print_exc()
+            self._all_sheets = {}
+            return self._all_sheets
+
+    def get_coordinates(self) -> Optional[str]:
+        """Get coordinates from Excel file for weather API calls"""
+        try:
+            all_sheets = self._load_all_sheets()
+            if "施設情報" not in all_sheets:
+                print(f"[MasterDataLoader] ERROR: 施設情報 sheet not found")
+                return None
+            facility_info_df = all_sheets["施設情報"]
             print(
                 f"[MasterDataLoader] Excel 施設情報 sheet読み込み成功: shape={facility_info_df.shape}"
             )
@@ -81,29 +106,13 @@ class MasterDataLoader:
 
     def get_store_info(self) -> Optional[dict]:
         """Get basic store information from Excel file"""
-        from config.utils import get_data_path
-
-        master_dir = get_data_path("master_data_path")
-        excel_path = os.path.join(master_dir, f"MASTER_{self.store_name}.xlsx")
-        storage_backend = os.getenv("STORAGE_BACKEND", "local").lower()
-
         try:
-            # Read the MASTER sheet
-            if storage_backend == "gcs":
-                print(
-                    f"[MasterDataLoader] MASTERシートをGCSから読み込み: 01_MasterData/MASTER_{self.store_name}.xlsx"
-                )
-                from io import BytesIO
-
-                from service.storage import get_storage_client
-
-                client = get_storage_client()
-                content = client.read_bytes(
-                    f"01_MasterData/MASTER_{self.store_name}.xlsx"
-                )
-                master_df = pd.read_excel(BytesIO(content), sheet_name="MASTER")
-            else:
-                master_df = pd.read_excel(excel_path, sheet_name="MASTER")
+            # Read the MASTER sheet from cache
+            all_sheets = self._load_all_sheets()
+            if "MASTER" not in all_sheets:
+                print(f"[MasterDataLoader] ERROR: MASTER sheet not found")
+                return None
+            master_df = all_sheets["MASTER"]
 
             # Get coordinates
             coordinates = self.get_coordinates()
@@ -126,32 +135,11 @@ class MasterDataLoader:
         """Get complete master data structure from consolidated 制御マスタ sheet for current month only"""
         from datetime import datetime
 
-        from config.utils import get_data_path
-
-        master_dir = get_data_path("master_data_path")
-        excel_path = os.path.join(master_dir, f"MASTER_{self.store_name}.xlsx")
-        storage_backend = os.getenv("STORAGE_BACKEND", "local").lower()
-
         try:
-            if storage_backend == "gcs":
-                print(
-                    f"[MasterDataLoader] Building master data from 制御マスタ (GCS): 01_MasterData/MASTER_{self.store_name}.xlsx"
-                )
-                from io import BytesIO
-
-                from service.storage import get_storage_client
-
-                client = get_storage_client()
-                content = client.read_bytes(
-                    f"01_MasterData/MASTER_{self.store_name}.xlsx"
-                )
-                all_sheets = pd.read_excel(BytesIO(content), sheet_name=None)
-            else:
-                print(
-                    f"[MasterDataLoader] Building master data from 制御マスタ sheet: {excel_path}"
-                )
-                # Read all sheets (local filesystem)
-                all_sheets = pd.read_excel(excel_path, sheet_name=None)
+            all_sheets = self._load_all_sheets()
+            if not all_sheets:
+                print(f"[MasterDataLoader] ERROR: No sheets loaded from Excel")
+                return None
             print(f"[MasterDataLoader] Available sheets: {list(all_sheets.keys())}")
 
             # Get current month

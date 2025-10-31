@@ -96,7 +96,7 @@ def execute_optimization_pipeline():
 
     success = run_optimization_for_store(
         store_name="Clea",
-        execution_mode="cloud",
+        execution_mode="gcs",
     )
     status_code = 200 if success else 201
     return JSONResponse(
@@ -145,7 +145,7 @@ def run_optimization_for_store(
 
     Args:
         store_name: ストア名
-        execution_mode: 実行モード ("preprocess", "aggregate", "optimize", "cloud", "full")
+        execution_mode: 実行モード ("preprocess", "aggregate", "optimize", "gcs", "full")
         start_date: 開始日 (オプション)
         end_date: 終了日 (オプション)
 
@@ -223,7 +223,7 @@ def run_optimization_for_store(
                 logging.error(f"Optimization error: {e}", exc_info=True)
                 return False
 
-        elif execution_mode == "cloud":
+        elif execution_mode == "gcs":
             print("🔄 フルパイプライン実行")
 
             opt_start_date = datetime.now(pytz.timezone("Asia/Tokyo")).strftime(
