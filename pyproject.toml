@@ -5,6 +5,11 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "fastapi>=0.115.0",
+    "google-api-python-client>=2.146.0",
+    "google-auth>=2.35.0",
+    "google-cloud-secret-manager>=2.25.0",
+    "google-cloud-storage>=2.18.0",
     "joblib>=1.5.2",
     "jpholiday>=1.0.2",
     "matplotlib>=3.10.6",
@@ -16,7 +21,9 @@ dependencies = [
     "requests>=2.32.5",
     "scikit-learn>=1.7.2",
     "seaborn>=0.13.2",
+    "secret-manager>=0.0.3",
     "shap>=0.48.0",
     "streamlit",
+    "uvicorn[standard]>=0.30.0",
     "xgboost>=3.0.5",
 ]

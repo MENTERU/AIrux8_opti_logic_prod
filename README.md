@@ -208,3 +208,102 @@ uv run main.py --optimize-only
 - 過去の実績データから学習 (Learn from Past Performance Data)
 - 類似条件での最適解を適用 (Apply Optimal Solutions for Similar Conditions)
 - 継続的な改善と適応 (Continuous Improvement and Adaptation)
+
+
+# GCP Settings 
+## Run locally with Docker Compose
+```
+docker compose down && docker compose up --build
+```
+
+## Test locally via HTTP
+```
+curl -X POST http://localhost:8080/execute_optimization_pipeline
+  -H "Content-Type: application/json" \
+  -d '{
+    "bucket": "airux8-opti-logic-prod",
+    "name": "00_InputData/Clea/01_PreprocessedData/features_processed_Clea.csv"
+  }'
+```
+
+## Manual deploy to Cloud Run Service
+Prereqs:
+- gcloud CLI authenticated and project set
+- Artifact Registry repository exists: `airux8-optimize-repo` in `asia-northeast1`
+- Service account has required roles: `${PROJECT}.iam.gserviceaccount.com`
+
+Authenticate and set project:
+```bash
+gcloud auth login
+gcloud config set project airux8-opti-logic
+```
+
+Authenticate Docker to Artifact Registry:
+```bash
+gcloud auth configure-docker asia-northeast1-docker.pkg.dev
+```
+
+Build and push image (Apple Silicon: target linux/amd64):
+```bash
+IMAGE="asia-northeast1-docker.pkg.dev/airux8-opti-logic/airux8-optimize-repo/svc-airux8-optimize:prod"
+docker buildx build --platform linux/amd64 -t "$IMAGE" . --push
+```
+
+Deploy Cloud Run Service (uses FastAPI/uvicorn CMD):
+```bash
+gcloud run deploy svc-airux8-optimize-prod \
+  --region=asia-northeast1 \
+  --image="$IMAGE" \
+  --service-account=svc-airux8-optimize@airux8-opti-logic.iam.gserviceaccount.com \
+  --memory=2Gi \
+  --cpu=1 \
+  --timeout=900s \
+  --max-instances=1 \
+  --set-env-vars=STORAGE_BACKEND=gcs,PROJECT_ID=airux8-opti-logic,BUCKET_NAME=airux8-opti-logic-prod \
+  --no-allow-unauthenticated
+```
+
+Create a trigger from GCS (if needed):
+```bash
+gcloud eventarc triggers create trigger-gcs-upload \
+  --location=asia-northeast1 \
+  --destination-run-service=svc-airux8-optimize-prod \
+  --destination-run-region=asia-northeast1 \
+  --event-filters="type=google.cloud.storage.object.v1.finalized" \
+  --event-filters="bucket=airux8-opti-logic-prod" \
+  --service-account=svc-airux8-optimize@airux8-opti-logic.iam.gserviceaccount.com
+```
+
+Notes:
+- Artifact image format: `REGION-docker.pkg.dev/PROJECT/REPO/IMAGE:TAG`.
+- For local only (no buildx), you can `docker build -t "$IMAGE" . && docker push "$IMAGE"`, but prefer buildx to ensure linux/amd64.
+
+Create Scheduler Job (if needed) / スケジューラージョブの作成 : 
+```bash
+
+gcloud scheduler jobs create http svc-airux8-optimize-prod \
+  --schedule "0 1 * * *" \
+  --uri "https://svc-airux8-optimize-prod-144706892563.asia-northeast1.run.app/execute_optimization_pipeline" \
+  --http-method POST \
+  --location asia-northeast1 \
+  --time-zone "Asia/Tokyo" \
+  --description "Run svc-airux8-optimize-prod daily" \
+  --oidc-service-account-email svc-airux8-optimize@airux8-opti-logic.iam.gserviceaccount.com \
+  --oidc-token-audience "https://svc-airux8-optimize-prod-144706892563.asia-northeast1.run.app/execute_optimization_pipeline" 
+
+  --headers "Content-Type=application/json" \
+  --message-body='{"bucket":"airux8-opti-logic-prod","name":"00_InputData/Clea/01_PreprocessedData/features_processed_Clea.csv"}'
+
+```
+
+To delete : 
+```bash
+gcloud scheduler jobs delete svc-airux8-optimize-prod --location asia-northeast1
+```
+
+Manual Execution / 手動実行
+To manually trigger the scheduler job:
+スケジューラージョブを手動で実行するには：
+```bash
+gcloud scheduler jobs run svc-airux8-optimize-prod --location=asia-northeast1
+```

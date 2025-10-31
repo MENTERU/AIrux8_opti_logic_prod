@@ -14,35 +14,35 @@ local_paths:
   encoding: "utf-8"
 
 
-# ------------------------------------------------------------
-# 旧Google Drive設定（現在使用停止中）
-# ------------------------------------------------------------
-remote_paths:
-  # Google Driveのパス設定（編集不要）
-  win_base_path: "G:/"
-  mac_base_path: "./Library/CloudStorage/GoogleDrive-"
+# # ------------------------------------------------------------
+# # 旧Google Drive設定（現在使用停止中）
+# # ------------------------------------------------------------
+# remote_paths:
+#   # Google Driveのパス設定（編集不要）
+#   win_base_path: "G:/"
+#   mac_base_path: "./Library/CloudStorage/GoogleDrive-"
 
-  # 共有ドライブの言語設定（編集不要）
-  EN: "Shared drives"
-  JP: "共有ドライブ"
-  # ベースとなるPATHの構成要素
-  base_path_components:
-    - "MENTERU_50_開発"
-    - "54_開発プロジェクト群"
-    - "トラース・オン・プロダクト様"
-    - "20_開発環境"
-    - "AIrux8_opti_logic"
+#   # 共有ドライブの言語設定（編集不要）
+#   EN: "Shared drives"
+#   JP: "共有ドライブ"
+#   # ベースとなるPATHの構成要素
+#   base_path_components:
+#     - "MENTERU_50_開発"
+#     - "54_開発プロジェクト群"
+#     - "トラース・オン・プロダクト様"
+#     - "20_開発環境"
+#     - "AIrux8_opti_logic"
 
-  # データフォルダのパス設定
-  # 元データフォルダ（data/ の代替。現在使用停止中）
-  raw_data_path: "data/00_InputData"
-  processed_data_path: "data/02_PreprocessedData"
-  models_path: "data/03_Models"
-  master_data_path: "data/01_MasterData"
-  output_data_path: "data/04_PlanningData"
+#   # データフォルダのパス設定
+#   # 元データフォルダ（data/ の代替。現在使用停止中）
+#   raw_data_path: "data/00_InputData"
+#   processed_data_path: "data/02_PreprocessedData"
+#   models_path: "data/03_Models"
+#   master_data_path: "data/01_MasterData"
+#   output_data_path: "data/04_PlanningData"
 
-  # Google Drive設定
-  service_account_json: "config/gdrive_service_account.json"
-  folder_id: "11WsqJyj0yq8AVqU5qQiRKmSxiR2_A_9E"
-  encoding: "utf-8"
-  remote_file_path: "data/04_PlanningData"
+#   # Google Drive設定
+#   service_account_json: "config/gdrive_service_account.json"
+#   folder_id: "11WsqJyj0yq8AVqU5qQiRKmSxiR2_A_9E"
+#   encoding: "utf-8"
+#   remote_file_path: "data/04_PlanningData"
