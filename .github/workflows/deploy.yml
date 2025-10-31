@@ -1,0 +1,57 @@
+name: Deploy to GCP Cloud Run/Functions/Jobs
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # Fetch full history for accurate git diff
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: ${{ secrets.GHA_GCP_AIRUX8_DEPLOYER_SA }}
+
+      - name: Setup gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ vars.PROJECT_ID }}
+          install_components: "alpha, beta"
+          skip_install: false
+
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker ${{ vars.REGION }}-docker.pkg.dev
+
+      # 🔹 Build and Push Image
+      - name: Build and Push Image
+        run: |
+          IMAGE_NAME="${{ vars.REGION }}-docker.pkg.dev/${{ vars.PROJECT_ID }}/${{ vars.OPTIMIZE_ARTIFACT_REPO }}/svc-airux8-optimize:${{ vars.DEV_ENV }}"
+          echo "Building and deploying AIrux8_opti_logic..."
+
+          # Build and push Docker image
+          docker buildx build --platform linux/amd64 -t $IMAGE_NAME . --push
+          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
+
+      # 🔹 Deploy Cloud Run Service
+      - name: Deploy Cloud Run Service
+        run: |
+          gcloud run deploy svc-airux8-optimize-${{ vars.DEV_ENV }} \
+            --region=${{ vars.REGION }} \
+            --image="$IMAGE_NAME" \
+            --service-account=${{ vars.JOB_AIRUX8_OPTIMIZE_SA }} \
+            --memory=2Gi \
+            --cpu=1 \
+            --timeout=900s \
+            --max-instances=1 \
+            --set-env-vars=STORAGE_BACKEND=gcs,PROJECT_ID=${{ vars.PROJECT_ID }},BUCKET_NAME=${{ vars.BUCKET_NAME }} \
+            --allow-unauthenticated

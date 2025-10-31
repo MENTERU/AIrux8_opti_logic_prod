@@ -14,6 +14,7 @@ from processing.utilities.temp_range_export import (
     update_master_from_analysis,
 )
 from processing.utilities.weatherapi_client import VisualCrossingWeatherAPIDataFetcher
+from service.storage import get_storage_client
 
 
 # =============================
@@ -22,10 +23,17 @@ from processing.utilities.weatherapi_client import VisualCrossingWeatherAPIDataF
 class DataPreprocessor:
     def __init__(self, store_name: str):
         self.store_name = store_name
-
+        self.storage = get_storage_client()
+        # Logical prefixes used by storage backends (local fs or GCS)
+        self.input_prefix = f"00_InputData/{store_name}"
+        self.output_prefix = f"02_PreprocessedData/{store_name}"
+        # Keep local paths for console logs
         self.data_dir = os.path.join(get_data_path("raw_data_path"), store_name)
         self.output_dir = os.path.join(get_data_path("processed_data_path"), store_name)
-        os.makedirs(self.output_dir, exist_ok=True)
+        try:
+            os.makedirs(self.output_dir, exist_ok=True)
+        except Exception:
+            pass
 
     # 共通
     @staticmethod
@@ -62,36 +70,33 @@ class DataPreprocessor:
         return df
 
     def load_raw(self) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
-        print(f"[DataPreprocessor] Loading raw data from: {self.data_dir}")
-        print(f"[DataPreprocessor] Directory exists: {os.path.exists(self.data_dir)}")
+        print(
+            f"[DataPreprocessor] Loading raw data (storage-backed) from logical prefix: {self.input_prefix}"
+        )
 
-        ac_files = glob.glob(f"{self.data_dir}/**/ac-control-*.csv", recursive=True)
-        pm_files = glob.glob(f"{self.data_dir}/**/ac-power-meter-*.csv", recursive=True)
+        # List files via storage and filter by expected folders/patterns
+        all_paths = self.storage.list(self.input_prefix)
+        ac_paths = [p for p in all_paths if "/ac-control/" in p and p.endswith(".csv")]
+        pm_paths = [
+            p for p in all_paths if "/ac-power-meter/" in p and p.endswith(".csv")
+        ]
 
-        print(f"[DataPreprocessor] Found {len(ac_files)} AC control files")
-        print(f"[DataPreprocessor] Found {len(pm_files)} power meter files")
+        print(f"[DataPreprocessor] Found {len(ac_paths)} AC control files")
+        print(f"[DataPreprocessor] Found {len(pm_paths)} power meter files")
 
-        if ac_files:
-            print(
-                f"[DataPreprocessor] AC files: {ac_files[:1]}..."
-            )  # Show first 3 files
-        if pm_files:
-            print(
-                f"[DataPreprocessor] PM files: {pm_files[:1]}..."
-            )  # Show first 3 files
+        if ac_paths:
+            print(f"[DataPreprocessor] AC example: {ac_paths[:1]}...")
+        if pm_paths:
+            print(f"[DataPreprocessor] PM example: {pm_paths[:1]}...")
 
         ac = (
-            pd.concat(
-                [pd.read_csv(f, low_memory=False) for f in ac_files], ignore_index=True
-            )
-            if ac_files
+            pd.concat([self.storage.read_csv(p) for p in ac_paths], ignore_index=True)
+            if ac_paths
             else None
         )
         pm = (
-            pd.concat(
-                [pd.read_csv(f, low_memory=False) for f in pm_files], ignore_index=True
-            )
-            if pm_files
+            pd.concat([self.storage.read_csv(p) for p in pm_paths], ignore_index=True)
+            if pm_paths
             else None
         )
 
@@ -426,12 +431,9 @@ class DataPreprocessor:
                     f"⚠️ No 'Datetime' column found in AC control data. Available columns: {list(ac_control_data.columns)}"
                 )
                 ac_sorted = ac_control_data
-            ac_sorted.to_csv(
-                os.path.join(
-                    self.output_dir, f"ac_control_processed_{self.store_name}.csv"
-                ),
-                index=False,
-                encoding="utf-8-sig",
+            self.storage.write_csv(
+                ac_sorted,
+                f"{self.output_prefix}/ac_control_processed_{self.store_name}.csv",
             )
         if power_meter_data is not None:
             # Sort by Datetime column in descending order (latest first)
@@ -442,12 +444,9 @@ class DataPreprocessor:
                     f"⚠️ No 'Datetime' column found in power meter data. Available columns: {list(power_meter_data.columns)}"
                 )
                 pm_sorted = power_meter_data
-            pm_sorted.to_csv(
-                os.path.join(
-                    self.output_dir, f"power_meter_processed_{self.store_name}.csv"
-                ),
-                index=False,
-                encoding="utf-8-sig",
+            self.storage.write_csv(
+                pm_sorted,
+                f"{self.output_prefix}/power_meter_processed_{self.store_name}.csv",
             )
         if weather_data is not None:
             # Find the datetime column (could be "Datetime" or "datetime")
@@ -467,12 +466,9 @@ class DataPreprocessor:
                 )
                 weather_sorted = weather_data
 
-            weather_sorted.to_csv(
-                os.path.join(
-                    self.output_dir, f"weather_processed_{self.store_name}.csv"
-                ),
-                index=False,
-                encoding="utf-8-sig",
+            self.storage.write_csv(
+                weather_sorted,
+                f"{self.output_prefix}/weather_processed_{self.store_name}.csv",
             )
 
         # 月別温度レンジ分析Excel出力
@@ -522,16 +518,18 @@ def preprocessing_runner(
     pm_processed_data = preprocessor.preprocess_pm(pm_raw_data, power_std_multiplier)
 
     # 天候データの処理
-    weather_file = os.path.join(
-        preprocessor.output_dir, f"weather_processed_{store_name}.csv"
+    weather_logical_path = (
+        f"02_PreprocessedData/{store_name}/weather_processed_{store_name}.csv"
     )
-    if os.path.exists(weather_file):
-        print(f"[Preprocess] キャッシュされた天候データを使用: {weather_file}")
-        historical_weather_data = pd.read_csv(weather_file)
+    try:
+        historical_weather_data = preprocessor.storage.read_csv(weather_logical_path)
+        print(f"[Preprocess] キャッシュされた天候データを使用: {weather_logical_path}")
         if "datetime" in historical_weather_data.columns:
             historical_weather_data["datetime"] = pd.to_datetime(
                 historical_weather_data["datetime"]
             )
+    except Exception:
+        historical_weather_data = None
     else:
         print("[Preprocess] APIから天候データを取得...")
         historical_weather_data = preprocessor._fetch_historical_weather(

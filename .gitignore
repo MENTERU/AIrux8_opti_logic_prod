@@ -231,3 +231,4 @@ analysis/output/
 visualization/
 .cursor/
 *.png
+svc-airux8-optimize-key.json

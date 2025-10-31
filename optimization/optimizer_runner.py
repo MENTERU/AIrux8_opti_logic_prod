@@ -12,6 +12,7 @@ import pandas as pd
 from config.utils import get_data_path
 from processing.utilities.master_data_loader import master_data_loader_runner
 from processing.utilities.weatherapi_client import VisualCrossingWeatherAPIDataFetcher
+from service.storage import get_storage_client
 
 from .optimizer import Optimizer
 
@@ -74,34 +75,40 @@ class OptimizerRunner:
         if not coordinates:
             raise ValueError(f"No coordinates found for store {self.store_name}")
 
-        # Import API key from config
-        from config.private_information import WEATHER_API_KEY
+        # Resolve API key: Secret Manager when STORAGE_BACKEND=gcs, else local config
+        api_key = None
+        try:
+            backend = os.getenv("STORAGE_BACKEND", "local").lower()
+            if backend == "gcs":
+                from service.secret_manager import SecretManagerService
 
-        api_key = WEATHER_API_KEY
+                sm = SecretManagerService()
+                api_key = sm.get_secret_as_str("WEATHER_API_KEY")
+        except Exception:
+            api_key = None
+        if not api_key:
+            from config.private_information import WEATHER_API_KEY
 
-        # Check for cached weather forecast first
-        output_data_path = get_data_path("output_data_path")
-        plan_dir = os.path.join(output_data_path, self.store_name)
+            api_key = WEATHER_API_KEY
 
+        # Check for cached weather forecast first (storage-backed)
+        storage = get_storage_client()
         start_clean = start_date.replace("-", "")
         end_clean = end_date.replace("-", "")
-        cached_filename = f"weather_forecast_{start_clean}_{end_clean}.csv"
-        cached_path = os.path.join(plan_dir, cached_filename)
+        cached_logical_path = f"04_PlanningData/{self.store_name}/weather_forecast_{start_clean}_{end_clean}.csv"
 
-        if os.path.exists(cached_path):
-            logging.info(f"Loading cached weather forecast: {cached_path}")
-            try:
-                self.weather_data = pd.read_csv(cached_path)
-                if "datetime" in self.weather_data.columns:
-                    self.weather_data["datetime"] = pd.to_datetime(
-                        self.weather_data["datetime"]
-                    )
-                logging.info(
-                    f"Cached weather data loaded. Shape: {self.weather_data.shape}"
+        try:
+            self.weather_data = storage.read_csv(cached_logical_path)
+            if "datetime" in self.weather_data.columns:
+                self.weather_data["datetime"] = pd.to_datetime(
+                    self.weather_data["datetime"]
                 )
-                return
-            except Exception as e:
-                logging.warning(f"Error loading cached weather data: {e}")
+            logging.info(
+                f"Cached weather data loaded. Shape: {self.weather_data.shape}"
+            )
+            return
+        except Exception:
+            pass
 
         logging.info(f"Fetching weather forecast from {start_date} to {end_date}")
         logging.info(f"Using coordinates: {coordinates}")
@@ -128,11 +135,10 @@ class OptimizerRunner:
                 f"Failed to fetch weather data for period {start_date} to {end_date}"
             )
 
-        # Save to cache
+        # Save to cache via storage client
         try:
-            os.makedirs(plan_dir, exist_ok=True)
-            self.weather_data.to_csv(cached_path, index=False, encoding="utf-8-sig")
-            logging.info(f"Weather forecast cached to: {cached_path}")
+            storage.write_csv(self.weather_data, cached_logical_path)
+            logging.info(f"Weather forecast cached to: {cached_logical_path}")
         except Exception as e:
             logging.warning(f"Error saving weather forecast to cache: {e}")
 
@@ -154,13 +160,28 @@ class OptimizerRunner:
         Returns:
             Dictionary containing optimization results
         """
-        # load processed features CSV
-        processed_data_path = get_data_path("processed_data_path")
-        self.features_csv_path = os.path.join(
-            processed_data_path, self.store_name, "features_processed_Clea.csv"
-        )
-        if not os.path.exists(self.features_csv_path):
-            raise FileNotFoundError(f"Features CSV not found: {self.features_csv_path}")
+        # load processed features CSV (storage-backed). Optimizer needs a file path, so
+        # for GCS we download to a temp file.
+        storage = get_storage_client()
+        features_logical_path = f"02_PreprocessedData/{self.store_name}/features_processed_{self.store_name}.csv"
+        backend = os.getenv("STORAGE_BACKEND", "local").lower()
+        if backend == "gcs":
+            import tempfile
+
+            tmp_fd, tmp_path = tempfile.mkstemp(prefix="features_", suffix=".csv")
+            os.close(tmp_fd)
+            # write bytes to tmp via storage.read_bytes
+            features_bytes = storage.read_bytes(features_logical_path)
+            with open(tmp_path, "wb") as f:
+                f.write(features_bytes)
+            self.features_csv_path = tmp_path
+        else:
+            local_root = os.getenv("LOCAL_DATA_ROOT", os.path.join(os.getcwd(), "data"))
+            self.features_csv_path = os.path.join(local_root, features_logical_path)
+            if not os.path.exists(self.features_csv_path):
+                raise FileNotFoundError(
+                    f"Features CSV not found: {self.features_csv_path}"
+                )
 
         # Set default dates if not provided (today + 6 days = one week period)
         if start_date is None:
@@ -253,10 +274,8 @@ class OptimizerRunner:
         if end_date is None:
             end_date = self.results.get("end_date", start_date)
 
-        # Create output directory in Clea folder
-        output_data_path = get_data_path("output_data_path")
-        output_dir = os.path.join(output_data_path, self.store_name)
-        os.makedirs(output_dir, exist_ok=True)
+        # Output path (storage-backed)
+        storage = get_storage_client()
 
         # Generate filename with start and end dates
         if filename is None:
@@ -267,10 +286,20 @@ class OptimizerRunner:
                 f"optimized_results_{start_date_formatted}_{end_date_formatted}.csv"
             )
 
-        output_path = os.path.join(output_dir, filename)
+        output_logical_path = f"04_PlanningData/{self.store_name}/{filename}"
 
-        # Save results
-        self.results["optimization_result"].to_csv(output_path, index=False)
+        # Save results via storage with explicit logging and error surfacing
+        logging.info(
+            f"Saving optimization results to storage path: {output_logical_path}"
+        )
+        try:
+            storage.write_csv(self.results["optimization_result"], output_logical_path)
+        except Exception as error:
+            logging.error(
+                f"Failed to save optimization results to {output_logical_path}: {error}",
+                exc_info=True,
+            )
+            raise
 
-        logging.info(f"Optimization results saved to: {output_path}")
-        return output_path
+        logging.info(f"Optimization results saved to: {output_logical_path}")
+        return output_logical_path
