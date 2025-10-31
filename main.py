@@ -36,6 +36,13 @@ def parse_arguments():
     parser.add_argument("--preprocess", action="store_true", help="前処理のみ実行")
     parser.add_argument("--aggregate", action="store_true", help="集約のみ実行")
     parser.add_argument("--optimize", action="store_true", help="最適化のみ実行")
+    parser.add_argument(
+        "--strategy",
+        type=str,
+        default="hourly",
+        choices=["hourly", "similar_day"],
+        help="最適化戦略の選択 (hourly|similar_day)",
+    )
     parser.add_argument("--start-date", type=str, help="最適化開始日 (YYYY-MM-DD形式)")
     parser.add_argument("--end-date", type=str, help="最適化終了日 (YYYY-MM-DD形式)")
 
@@ -47,6 +54,7 @@ def run_optimization_for_store(
     execution_mode: str = "full",
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    strategy: str = "hourly",
 ):
     """
     指定されたストアの最適化を実行
@@ -100,6 +108,7 @@ def run_optimization_for_store(
             if end_date is None:
                 end_date = "2025-10-04"
             logging.info(f"Optimizing for period: {start_date} to {end_date}")
+            logging.info(f"Strategy: {strategy}")
 
             try:
                 # Initialize optimization runner
@@ -108,7 +117,9 @@ def run_optimization_for_store(
 
                 # Run optimization (this will load data and run optimization)
                 logging.info(f"Running optimization for {start_date} to {end_date}...")
-                results = runner.run_optimization(start_date, end_date)
+                results = runner.run_optimization(
+                    start_date, end_date, strategy=strategy
+                )
 
                 if results.get("status") == "success":
                     # Save results
@@ -162,7 +173,9 @@ def run_optimization_for_store(
                 return False
 
             runner = OptimizerRunner(store_name=store_name)
-            optimization_results = runner.run_optimization(opt_start_date, opt_end_date)
+            optimization_results = runner.run_optimization(
+                opt_start_date, opt_end_date, strategy=strategy
+            )
             if optimization_results.get("status") != "success":
                 print(
                     f"❌ フルパイプライン失敗: {optimization_results.get('error', 'Unknown error')}"
@@ -212,6 +225,7 @@ def main():
             execution_mode=execution_mode,
             start_date=args.start_date,
             end_date=args.end_date,
+            strategy=args.strategy,
         )
     elif len(execution_modes) == 1:
         execution_mode = execution_modes[0]
@@ -220,6 +234,7 @@ def main():
             execution_mode=execution_mode,
             start_date=args.start_date,
             end_date=args.end_date,
+            strategy=args.strategy,
         )
     else:
         # Multiple modes specified - execute them in sequence
@@ -238,6 +253,7 @@ def main():
                 execution_mode=mode,
                 start_date=args.start_date,
                 end_date=args.end_date,
+                strategy=args.strategy,
             )
 
             if not step_success:

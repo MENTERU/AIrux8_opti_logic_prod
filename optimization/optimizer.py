@@ -29,7 +29,12 @@ class Optimizer:
     best-performing settings that minimize power consumption while maintaining comfort.
     """
 
-    def __init__(self, use_operating_hours: bool = True):
+    def __init__(
+        self,
+        use_operating_hours: bool = False,
+        strategy: str = "hourly",
+        similar_days_k: int = 15,
+    ):
         """
         Initialize the Optimizer with configuration.
 
@@ -43,8 +48,12 @@ class Optimizer:
         self.TEMP_TOLERANCE = 0.5  # ±0.5°C for weather matching
         # self.SOLAR_TOLERANCE = 100.0  # ±100 W/m² for solar radiation matching
 
-        # Operating hours flag
+        # Operating hours flag (default: ignore operating hours)
         self.use_operating_hours = use_operating_hours
+
+        # Strategy: "hourly" (default) or "similar_day"
+        self.strategy = strategy
+        self.similar_days_k = max(1, int(similar_days_k))
 
         # Load category mappings
         self.category_mappings = self._load_category_mappings()
@@ -200,6 +209,33 @@ class Optimizer:
         # Filter by same hour of day
         zone_data["hour"] = zone_data["Datetime"].dt.hour
         same_hour_data = zone_data[zone_data["hour"] == forecast_hour].copy()
+
+        # Similar-day strategy: restrict candidates to historically similar days (by daily mean weather)
+        if self.strategy == "similar_day" and "Date" in same_hour_data.columns:
+            f_date = forecast_datetime.date()
+            # Compute forecast day's mean weather
+            # Expect caller to pass full forecast_df externally for a day-level calc; fallback to row values
+            f_temp = forecast_row["Outdoor Temp."]
+            f_solar = forecast_row["Solar Radiation"]
+            # Historical daily means for the zone
+            daily_hist = (
+                zone_data.groupby("Date")[["Outdoor Temp.", "Solar Radiation"]]
+                .mean()
+                .reset_index()
+            )
+            if not daily_hist.empty:
+                daily_hist["temp_diff"] = (daily_hist["Outdoor Temp."] - f_temp).abs()
+                daily_hist["solar_diff"] = (
+                    daily_hist["Solar Radiation"] - f_solar
+                ).abs()
+                daily_hist["score"] = (
+                    self.WEATHER_WEIGHTS["temperature"] * daily_hist["temp_diff"]
+                    + self.WEATHER_WEIGHTS["solar_radiation"] * daily_hist["solar_diff"]
+                )
+                top_days = daily_hist.nsmallest(self.similar_days_k, "score")[
+                    "Date"
+                ].tolist()
+                same_hour_data = same_hour_data[same_hour_data["Date"].isin(top_days)]
 
         if len(same_hour_data) == 0:
             return pd.DataFrame()

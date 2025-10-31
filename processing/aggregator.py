@@ -101,6 +101,14 @@ class AreaAggregator:
                     ac_sub["Datetime"] = pd.to_datetime(ac_sub["Datetime"]).dt.floor(
                         freq.replace("H", "h")
                     )
+                    # Enforce ON/OFF coding to 0=OFF, 1=ON
+                    if "A/C ON/OFF" in ac_sub.columns:
+                        ac_sub["A/C ON/OFF"] = pd.to_numeric(
+                            ac_sub["A/C ON/OFF"], errors="coerce"
+                        ).fillna(0)
+                        ac_sub["A/C ON/OFF"] = (ac_sub["A/C ON/OFF"] > 0).astype(
+                            "int64"
+                        )
                     # After categorical mapping, A/C ON/OFF is already numeric (0=OFF, 1=ON)
                     # So we can use it directly for counting units ON
 
@@ -416,8 +424,10 @@ class AreaAggregator:
             # Datetime, Dateを最初に配置
             area_df = area_df[["Datetime", "Date"] + cols]
 
-            # Final sort by Datetime in descending order (newest to oldest) after all processing
-            area_df.sort_values("Datetime", ascending=False, inplace=True)
+            # Final sort: zone 昇順 → Datetime 降順（各ゾーン内で新しい順）
+            area_df.sort_values(
+                ["zone", "Datetime"], ascending=[True, False], inplace=True
+            )
 
         return area_df
 

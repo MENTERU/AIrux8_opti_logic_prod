@@ -142,7 +142,7 @@ class OptimizerRunner:
         )
 
     def run_optimization(
-        self, start_date: str = None, end_date: str = None
+        self, start_date: str = None, end_date: str = None, strategy: str = "hourly"
     ) -> Dict[str, Any]:
         """
         Run the zone-based optimization for the specified date range.
@@ -197,7 +197,7 @@ class OptimizerRunner:
             self.load_weather_data(start_date, end_date)
 
             # Run optimization
-            self.optimizer = Optimizer(use_operating_hours=False)
+            self.optimizer = Optimizer(use_operating_hours=False, strategy=strategy)
             result_df = self.optimizer.optimize_all_zones(
                 forecast_df=self.weather_data,
                 features_csv_path=self.features_csv_path,
