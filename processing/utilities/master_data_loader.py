@@ -19,16 +19,29 @@ class MasterDataLoader:
 
         master_dir = get_data_path("master_data_path")
         excel_path = os.path.join(master_dir, f"MASTER_{self.store_name}.xlsx")
-
-        if not os.path.exists(excel_path):
-            print(f"[MasterDataLoader] Excelファイルが見つかりません: {excel_path}")
-            return None
+        storage_backend = os.getenv("STORAGE_BACKEND", "local").lower()
 
         try:
-            print(f"[MasterDataLoader] Excelファイルを読み込み中: {excel_path}")
+            if storage_backend == "gcs":
+                # Read from GCS
+                print(
+                    f"[MasterDataLoader] ExcelファイルをGCSから読み込み中: 01_MasterData/MASTER_{self.store_name}.xlsx"
+                )
+                from io import BytesIO
 
-            # Read the 施設情報 sheet
-            facility_info_df = pd.read_excel(excel_path, sheet_name="施設情報")
+                from service.storage import get_storage_client
+
+                 client = get_storage_client()
+                content = client.read_bytes(
+                    f"01_MasterData/MASTER_{self.store_name}.xlsx"
+                )
+                facility_info_df = pd.read_excel(
+                    BytesIO(content), sheet_name="施設情報"
+                )
+            else:
+                print(f"[MasterDataLoader] Excelファイルを読み込み中: {excel_path}")
+                # Read the 施設情報 sheet (local filesystem)
+                facility_info_df = pd.read_excel(excel_path, sheet_name="施設情報")
             print(
                 f"[MasterDataLoader] Excel 施設情報 sheet読み込み成功: shape={facility_info_df.shape}"
             )
@@ -72,14 +85,25 @@ class MasterDataLoader:
 
         master_dir = get_data_path("master_data_path")
         excel_path = os.path.join(master_dir, f"MASTER_{self.store_name}.xlsx")
-
-        if not os.path.exists(excel_path):
-            print(f"[MasterDataLoader] Excelファイルが見つかりません: {excel_path}")
-            return None
+        storage_backend = os.getenv("STORAGE_BACKEND", "local").lower()
 
         try:
             # Read the MASTER sheet
-            master_df = pd.read_excel(excel_path, sheet_name="MASTER")
+            if storage_backend == "gcs":
+                print(
+                    f"[MasterDataLoader] MASTERシートをGCSから読み込み: 01_MasterData/MASTER_{self.store_name}.xlsx"
+                )
+                from io import BytesIO
+
+                from service.storage import get_storage_client
+
+                client = get_storage_client()
+                content = client.read_bytes(
+                    f"01_MasterData/MASTER_{self.store_name}.xlsx"
+                )
+                master_df = pd.read_excel(BytesIO(content), sheet_name="MASTER")
+            else:
+                master_df = pd.read_excel(excel_path, sheet_name="MASTER")
 
             # Get coordinates
             coordinates = self.get_coordinates()
@@ -106,18 +130,28 @@ class MasterDataLoader:
 
         master_dir = get_data_path("master_data_path")
         excel_path = os.path.join(master_dir, f"MASTER_{self.store_name}.xlsx")
-
-        if not os.path.exists(excel_path):
-            print(f"[MasterDataLoader] Excelファイルが見つかりません: {excel_path}")
-            return None
+        storage_backend = os.getenv("STORAGE_BACKEND", "local").lower()
 
         try:
-            print(
-                f"[MasterDataLoader] Building master data from consolidated 制御マスタ sheet: {excel_path}"
-            )
+            if storage_backend == "gcs":
+                print(
+                    f"[MasterDataLoader] Building master data from 制御マスタ (GCS): 01_MasterData/MASTER_{self.store_name}.xlsx"
+                )
+                from io import BytesIO
 
-            # Read all sheets
-            all_sheets = pd.read_excel(excel_path, sheet_name=None)
+                from service.storage import get_storage_client
+
+                client = get_storage_client()
+                content = client.read_bytes(
+                    f"01_MasterData/MASTER_{self.store_name}.xlsx"
+                )
+                all_sheets = pd.read_excel(BytesIO(content), sheet_name=None)
+            else:
+                print(
+                    f"[MasterDataLoader] Building master data from 制御マスタ sheet: {excel_path}"
+                )
+                # Read all sheets (local filesystem)
+                all_sheets = pd.read_excel(excel_path, sheet_name=None)
             print(f"[MasterDataLoader] Available sheets: {list(all_sheets.keys())}")
 
             # Get current month
@@ -183,7 +217,7 @@ class MasterDataLoader:
                         "indoor_units"
                     ].append(indoor_unit)
 
-            # Process consolidated 制御マスタ sheet for current month settings
+            # Process 制御マスタ sheet for current month settings
             if "制御マスタ" not in all_sheets:
                 print(f"[MasterDataLoader] ERROR: 制御マスタ sheet not found")
                 return None
@@ -416,7 +450,7 @@ def get_zone_operating_hours(master_data: dict, zone: str) -> tuple[int, int]:
 
 def master_data_loader_runner(store_name: str) -> Optional[dict]:
     """
-    Extract complete Excel master data from consolidated 制御マスタ sheet for current month
+    Extract complete Excel master data from 制御マスタ sheet for current month
 
     Args:
         store_name: ストア名
@@ -424,7 +458,7 @@ def master_data_loader_runner(store_name: str) -> Optional[dict]:
     Returns:
         dict: マスタデータ
     """
-    # Extract complete Excel master data from consolidated 制御マスタ sheet for current month
+    # Extract complete Excel master data from 制御マスタ sheet for current month
     complete_excel_master_data = None
     try:
 
@@ -432,9 +466,7 @@ def master_data_loader_runner(store_name: str) -> Optional[dict]:
         excel_master_data = excel_loader.get_complete_master_data()
 
         if excel_master_data:
-            print(
-                f"[RunOptimization] Using consolidated Excel master data for current month"
-            )
+            print(f"[RunOptimization] Using Excel master data for current month")
             print(
                 f"[RunOptimization] Excel master data zones: {list(excel_master_data.get('zones', {}).keys())}"
             )
@@ -443,8 +475,8 @@ def master_data_loader_runner(store_name: str) -> Optional[dict]:
             )
             return excel_master_data
         else:
-            print(f"[RunOptimization] ERROR: No consolidated Excel master data found")
+            print(f"[RunOptimization] ERROR: No Excel master data found")
             return None
     except Exception as e:
-        print(f"[RunOptimization] ERROR getting consolidated Excel master data: {e}")
+        print(f"[RunOptimization] ERROR getting Excel master data: {e}")
         return None

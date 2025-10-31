@@ -8,6 +8,7 @@ from processing.utilities.category_mapping_loader import (
     get_default_category_value,
     map_category_series,
 )
+from service.storage import get_storage_client
 
 
 # =============================
@@ -658,19 +659,27 @@ def aggregation_runner(
     else:
         print(f"[Aggregate] Using coordinates from master data: {coordinates}")
 
-    # 処理済みデータの読み込み
-    from config.utils import get_data_path
-
-    proc_dir = os.path.join(get_data_path("processed_data_path"), store_name)
-    plan_dir = os.path.join(get_data_path("output_data_path"), store_name)
-    ac_p = os.path.join(proc_dir, f"ac_control_processed_{store_name}.csv")
-    pm_p = os.path.join(proc_dir, f"power_meter_processed_{store_name}.csv")
-    weather_p = os.path.join(proc_dir, f"weather_processed_{store_name}.csv")
-    ac_processed_data = pd.read_csv(ac_p) if os.path.exists(ac_p) else None
-    pm_processed_data = pd.read_csv(pm_p) if os.path.exists(pm_p) else None
-    historical_weather_data = (
-        pd.read_csv(weather_p) if os.path.exists(weather_p) else None
-    )
+    # 処理済みデータの読み込み（storage 経由）
+    storage = get_storage_client()
+    plan_dir = f"04_PlanningData/{store_name}"
+    try:
+        ac_processed_data = storage.read_csv(
+            f"02_PreprocessedData/{store_name}/ac_control_processed_{store_name}.csv"
+        )
+    except Exception:
+        ac_processed_data = None
+    try:
+        pm_processed_data = storage.read_csv(
+            f"02_PreprocessedData/{store_name}/power_meter_processed_{store_name}.csv"
+        )
+    except Exception:
+        pm_processed_data = None
+    try:
+        historical_weather_data = storage.read_csv(
+            f"02_PreprocessedData/{store_name}/weather_processed_{store_name}.csv"
+        )
+    except Exception:
+        historical_weather_data = None
 
     if ac_processed_data is None or pm_processed_data is None:
         print("[Aggregate] 処理済みデータが見つかりません")
@@ -724,10 +733,13 @@ def aggregation_runner(
 
     # データの保存
     if area_df is not None:
-        area_out = os.path.join(proc_dir, f"features_processed_{store_name}.csv")
-        os.makedirs(proc_dir, exist_ok=True)
-        area_df.to_csv(area_out, index=False, encoding="utf-8-sig")
-        print(f"[Aggregate] 集約データを保存: {area_out}")
+        storage.write_csv(
+            area_df,
+            f"02_PreprocessedData/{store_name}/features_processed_{store_name}.csv",
+        )
+        print(
+            f"[Aggregate] 集約データを保存: 02_PreprocessedData/{store_name}/features_processed_{store_name}.csv"
+        )
 
     print("[Aggregate] 集約完了")
     return area_df

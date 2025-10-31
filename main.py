@@ -9,16 +9,91 @@ import sys
 from datetime import datetime, timedelta
 from typing import Optional
 
+import pytz
+from fastapi import Body, FastAPI, HTTPException
+from fastapi.responses import JSONResponse
+
 from config.private_information import WEATHER_API_KEY
 from config.utils import get_data_path
 from optimization.optimizer_runner import OptimizerRunner
 from processing.aggregator import aggregation_runner
 from processing.preprocessor import preprocessing_runner
 from processing.utilities.master_data_loader import master_data_loader_runner
+from service.secret_manager import SecretManagerService
+
+app = FastAPI()  # Initialize FastAPI app
+
+
+def _resolve_weather_api_key() -> str:
+    """Resolve weather API key by backend"""
+    backend = os.getenv("STORAGE_BACKEND", "local").lower()
+    if backend == "gcs":
+        try:
+            sm = SecretManagerService()
+            key = sm.get_secret_as_str("WEATHER_API_KEY")
+            if key:
+                return key
+        except Exception:
+            pass
+    return WEATHER_API_KEY
+
+
+@app.post("/execute_optimization_pipeline")
+def execute_optimization_pipeline():
+    """This endpoint is used to execute the optimization pipeline.
+    It will be triggered by GCS event when preprocessed data is uploaded.
+
+    Args:
+        event: dict - GCS event
+    Returns: JSONResponse"""
+    # TODO: Implement this check later. For now, we will use Cloud Scheduler to trigger
+    # bucket_name = event.get("bucket")
+    # file_name = event.get("name")
+
+    # # Guard: must have bucket and name
+    # if not bucket_name or not file_name:
+    #     raise HTTPException(
+    #         status_code=400, detail="Invalid GCS event: missing bucket or name"
+    #     )
+
+    # # Guard: only files under the allowed prefixes (avoid recursion on our own outputs)
+    # if not any(file_name.startswith(prefix) for prefix in ALLOWED_TRIGGER_PREFIXES):
+    #     return JSONResponse(
+    #         status_code=201,
+    #         content={
+    #             "message": f"File {file_name} skipped - not in allowed prefixes",
+    #             "allowed_prefixes": ALLOWED_TRIGGER_PREFIXES,
+    #         },
+    #     )
+
+    # # Guard: only allow csv files
+    # allowed_extensions = {"csv"}
+    # file_extension = file_name.split(".")[-1].lower()
+    # if file_extension not in allowed_extensions:
+    #     return JSONResponse(
+    #         status_code=201,
+    #         content={
+    #             "message": f"File {file_name} skipped - unsupported file type: {file_extension}",
+    #         },
+    #     )
+
+    success = run_optimization_for_store(
+        store_name="Clea",
+        execution_mode="cloud",
+    )
+    status_code = 200 if success else 201
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "message": "full pipeline executed" if success else "pipeline failed",
+            # "bucket": bucket_name,
+            # "name": file_name,
+        },
+    )
 
 
 def parse_arguments():
-    """Parse command line arguments"""
+    """Parse command line arguments for local development"""
     parser = argparse.ArgumentParser(
         description="エアコン最適化システム - 実行スクリプト",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -49,11 +124,11 @@ def run_optimization_for_store(
     end_date: Optional[str] = None,
 ):
     """
-    指定されたストアの最適化を実行
+    指定されたストアの最適化を実行 (Cloud Run or Local Development)
 
     Args:
         store_name: ストア名
-        execution_mode: 実行モード ("preprocess", "aggregate", "full")
+        execution_mode: 実行モード ("preprocess", "aggregate", "optimize", "cloud", "full")
         start_date: 開始日 (オプション)
         end_date: 終了日 (オプション)
 
@@ -127,6 +202,33 @@ def run_optimization_for_store(
                 logging.error(f"Optimization error: {e}", exc_info=True)
                 return False
 
+        elif execution_mode == "cloud":
+            print("🔄 フルパイプライン実行")
+
+            opt_start_date = datetime.now(pytz.timezone("Asia/Tokyo")).strftime(
+                "%Y-%m-%d"
+            )
+            opt_end_date = (
+                datetime.now(pytz.timezone("Asia/Tokyo")) + timedelta(days=6)
+            ).strftime("%Y-%m-%d")
+
+            runner = OptimizerRunner(store_name=store_name)
+            optimization_results = runner.run_optimization(opt_start_date, opt_end_date)
+            if optimization_results.get("status") != "success":
+                print(
+                    f"❌ フルパイプライン失敗: {optimization_results.get('error', 'Unknown error')}"
+                )
+                return False
+            # Save results to storage (GCS or local depending on backend)
+            try:
+                output_path = runner.save_results_to_csv(opt_start_date, opt_end_date)
+                print("✅ フルパイプライン完了")
+                print(f"📁 結果保存先: {output_path}")
+                return True
+            except Exception as e:
+                print(f"❌ 結果の保存に失敗しました: {e}")
+                return False
+
         else:  # full
             print("🔄 フルパイプライン実行")
             opt_start_date = start_date or end_date
@@ -143,7 +245,7 @@ def run_optimization_for_store(
             preprocess_success = preprocessing_runner(
                 store_name=store_name,
                 store_master_file=store_master_file,
-                weather_api_key=WEATHER_API_KEY,
+                weather_api_key=_resolve_weather_api_key(),
                 temperature_std_multiplier=5.0,
                 power_std_multiplier=5.0,
                 export_temp_range_stats=False,
