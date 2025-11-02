@@ -222,7 +222,6 @@ archive/
 data/
 old/
 gdrive_service_account.json
-notebooks/
 all_settings_dashboard/
 validation_plots.html
 # Log files
