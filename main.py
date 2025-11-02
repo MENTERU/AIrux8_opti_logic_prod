@@ -13,7 +13,6 @@ import pytz
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
-from config.private_information import WEATHER_API_KEY
 from config.utils import get_data_path
 from optimization.optimizer_runner import OptimizerRunner
 from processing.aggregator import aggregation_runner
@@ -26,16 +25,34 @@ app = FastAPI()  # Initialize FastAPI app
 
 def _resolve_weather_api_key() -> str:
     """Resolve weather API key by backend"""
+    # 1) Environment variable
+    env_key = os.getenv("WEATHER_API_KEY")
+    if env_key:
+        return env_key
+
+    # 2) GCP Secret Manager (when running on GCP)
     backend = os.getenv("STORAGE_BACKEND", "local").lower()
-    if backend == "gcs":
-        try:
+    try:
+        if backend == "gcs":
             sm = SecretManagerService()
             key = sm.get_secret_as_str("WEATHER_API_KEY")
             if key:
                 return key
-        except Exception:
-            pass
-    return WEATHER_API_KEY
+    except Exception:
+        pass
+
+    # 3) Optional local fallback without hard import
+    try:
+        import importlib
+
+        pi = importlib.import_module("config.private_information")
+        local_key = getattr(pi, "WEATHER_API_KEY", None)
+        if local_key:
+            return local_key
+    except Exception:
+        pass
+
+    raise RuntimeError("WEATHER_API_KEY not configured. Set env var or secret.")
 
 
 @app.post("/execute_optimization_pipeline")
@@ -79,7 +96,7 @@ def execute_optimization_pipeline():
 
     success = run_optimization_for_store(
         store_name="Clea",
-        execution_mode="cloud",
+        execution_mode="gcs",
     )
     status_code = 200 if success else 201
     return JSONResponse(
@@ -136,7 +153,7 @@ def run_optimization_for_store(
 
     Args:
         store_name: ストア名
-        execution_mode: 実行モード ("preprocess", "aggregate", "optimize", "cloud", "full")
+        execution_mode: 実行モード ("preprocess", "aggregate", "optimize", "gcs", "full")
         start_date: 開始日 (オプション)
         end_date: 終了日 (オプション)
 
@@ -155,7 +172,7 @@ def run_optimization_for_store(
             preprocessing_runner(
                 store_name=store_name,
                 store_master_file=store_master_file,
-                weather_api_key=WEATHER_API_KEY,
+                weather_api_key=_resolve_weather_api_key(),
                 temperature_std_multiplier=5.0,
                 power_std_multiplier=5.0,
                 export_temp_range_stats=True,
@@ -177,11 +194,15 @@ def run_optimization_for_store(
             print("=" * 50)
             print("🔄 最適化のみ実行")
 
-            # Use provided dates or default to a test period
+            # Use provided dates or default to today -> +3 days
             if start_date is None:
-                start_date = "2025-09-29"
+                start_date = datetime.now(pytz.timezone("Asia/Tokyo")).strftime(
+                    "%Y-%m-%d"
+                )
             if end_date is None:
-                end_date = "2025-10-04"
+                end_date = (
+                    datetime.now(pytz.timezone("Asia/Tokyo")) + timedelta(days=3)
+                ).strftime("%Y-%m-%d")
             logging.info(f"Optimizing for period: {start_date} to {end_date}")
             logging.info(f"Strategy: {strategy}")
 
@@ -213,14 +234,14 @@ def run_optimization_for_store(
                 logging.error(f"Optimization error: {e}", exc_info=True)
                 return False
 
-        elif execution_mode == "cloud":
+        elif execution_mode == "gcs":
             print("🔄 フルパイプライン実行")
 
             opt_start_date = datetime.now(pytz.timezone("Asia/Tokyo")).strftime(
                 "%Y-%m-%d"
             )
             opt_end_date = (
-                datetime.now(pytz.timezone("Asia/Tokyo")) + timedelta(days=6)
+                datetime.now(pytz.timezone("Asia/Tokyo")) + timedelta(days=3)
             ).strftime("%Y-%m-%d")
 
             runner = OptimizerRunner(store_name=store_name)
@@ -246,8 +267,9 @@ def run_optimization_for_store(
             opt_end_date = end_date or start_date
 
             if opt_start_date is None and opt_end_date is None:
-                opt_start_date = "2025-09-29"
-                opt_end_date = "2025-10-04"
+                now_tokyo = datetime.now(pytz.timezone("Asia/Tokyo"))
+                opt_start_date = now_tokyo.strftime("%Y-%m-%d")
+                opt_end_date = (now_tokyo + timedelta(days=3)).strftime("%Y-%m-%d")
             elif opt_start_date is None:
                 opt_start_date = opt_end_date
             elif opt_end_date is None:

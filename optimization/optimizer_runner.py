@@ -183,11 +183,11 @@ class OptimizerRunner:
                     f"Features CSV not found: {self.features_csv_path}"
                 )
 
-        # Set default dates if not provided (today + 6 days = one week period)
+        # Set default dates if not provided (today + 3 days)
         if start_date is None:
             today = datetime.now().date()
             start_date = today.strftime("%Y-%m-%d")
-            end_date = (today + timedelta(days=6)).strftime("%Y-%m-%d")
+            end_date = (today + timedelta(days=3)).strftime("%Y-%m-%d")
             logging.info(
                 f"No dates provided, using default period: {start_date} to {end_date}"
             )
