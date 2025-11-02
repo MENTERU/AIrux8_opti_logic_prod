@@ -22,6 +22,9 @@ dependencies = [
     "seaborn>=0.13.2",
     "secret-manager>=0.0.3",
     "shap>=0.48.0",
+    "streamlit",
+    "tensorboard>=2.20.0",
+    "tianshou>=1.2.0",
     "uvicorn[standard]>=0.30.0",
 ]
 
