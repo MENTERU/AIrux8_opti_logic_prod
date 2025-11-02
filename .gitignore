@@ -79,6 +79,8 @@ target/
 
 # Jupyter Notebook
 .ipynb_checkpoints
+# Allow notebook files to be tracked
+!*.ipynb
 
 # IPython
 profile_default/
