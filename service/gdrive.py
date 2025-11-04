@@ -14,13 +14,13 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class GoogleDriveUploader:
+class GoogleDriveClient:
     """
     Google Drive file uploader using service account credentials.
 
     Usage:
         # Initialize with service account JSON string
-        uploader = GoogleDriveUploader(service_account_json=json_string, folder_id="your_folder_id")
+        uploader = GoogleDriveClient(service_account_json=json_string, folder_id="your_folder_id")
 
         # Upload DataFrame as CSV
         file_id = uploader.upload_dataframe(df, "filename.csv")
@@ -222,7 +222,7 @@ def upload_dataframe_to_drive(
     Returns:
         file_id: Google Drive file ID
     """
-    uploader = GoogleDriveUploader(service_account_json, folder_id, encoding)
+    uploader = GoogleDriveClient(service_account_json, folder_id, encoding)
     return uploader.upload_file(df, filename, encoding)
 
 

@@ -13,7 +13,7 @@ from google.cloud import secretmanager
 from config.config_gcp import GCPEnv
 
 
-class SecretManagerService:
+class SecretManagerClient:
     """Centralized service for GCP Secret Manager operations"""
 
     def __init__(self, project_id: str = None):
@@ -97,4 +97,4 @@ class SecretManagerService:
 
 
 # Global instance for easy access
-secret_manager_service = SecretManagerService()
+secret_manager_service = SecretManagerClient()
