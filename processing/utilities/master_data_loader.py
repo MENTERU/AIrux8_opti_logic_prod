@@ -349,25 +349,38 @@ def get_comfort_range(master_data: dict, zone: str, month: int) -> tuple[float, 
         tuple: (min_temp, max_temp) comfort range
     """
     try:
+        from datetime import datetime
+
         # Convert month to Japanese format
         month_japanese = f"{month}月"
+        current_month = datetime.now().month
 
-        # Load the 制御マスタ sheet directly to get month-specific data
-        import os
+        # If requesting current month, try to get from master_data first
+        if month == current_month and zone in master_data.get("zones", {}):
+            zone_data = master_data["zones"][zone]
+            if "comfort_min" in zone_data and "comfort_max" in zone_data:
+                return (
+                    float(zone_data["comfort_min"]),
+                    float(zone_data["comfort_max"]),
+                )
 
-        from config.utils import get_data_path
+        # Otherwise, read from Excel file using storage client
+        from service.storage import get_storage_client
 
-        master_dir = get_data_path("master_data_path")
-        excel_path = os.path.join(
-            master_dir, f"MASTER_{master_data['store_info']['name']}.xlsx"
-        )
+        store_name = master_data["store_info"]["name"]
+        storage_backend = os.getenv("STORAGE_BACKEND", "local").lower()
+        client = get_storage_client()
 
-        if not os.path.exists(excel_path):
-            print(f"[get_comfort_range] Excel file not found: {excel_path}")
-            return (22.0, 25.0)  # Default comfort range
+        if storage_backend == "gcs":
+            excel_path = f"01_MasterData/MASTER_{store_name}.xlsx"
+        else:
+            from config.utils import get_data_path
 
-        # Read 制御マスタ sheet
-        control_master_df = pd.read_excel(excel_path, sheet_name="制御マスタ")
+            master_dir = get_data_path("master_data_path")
+            excel_path = os.path.join(master_dir, f"MASTER_{store_name}.xlsx")
+
+        # Read 制御マスタ sheet using storage client
+        control_master_df = client.read_excel(excel_path, sheet_name="制御マスタ")
 
         # Filter for specific zone and month
         zone_month_data = control_master_df[
@@ -397,6 +410,9 @@ def get_comfort_range(master_data: dict, zone: str, month: int) -> tuple[float, 
 
     except Exception as e:
         print(f"[get_comfort_range] Error getting comfort range: {e}")
+        import traceback
+
+        traceback.print_exc()
         return (22.0, 25.0)  # Default comfort range
 
 

@@ -80,9 +80,9 @@ class OptimizerRunner:
         try:
             backend = os.getenv("STORAGE_BACKEND", "local").lower()
             if backend == "gcs":
-                from service.secret_manager import SecretManagerService
+                from service.secretmanager import SecretManagerClient
 
-                sm = SecretManagerService()
+                sm = SecretManagerClient()
                 api_key = sm.get_secret_as_str("WEATHER_API_KEY")
         except Exception:
             api_key = None

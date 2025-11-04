@@ -18,7 +18,7 @@ from optimization.optimizer_runner import OptimizerRunner
 from processing.aggregator import aggregation_runner
 from processing.preprocessor import preprocessing_runner
 from processing.utilities.master_data_loader import master_data_loader_runner
-from service.secret_manager import SecretManagerService
+from service.secretmanager import SecretManagerClient
 
 app = FastAPI()  # Initialize FastAPI app
 
@@ -34,7 +34,7 @@ def _resolve_weather_api_key() -> str:
     backend = os.getenv("STORAGE_BACKEND", "local").lower()
     try:
         if backend == "gcs":
-            sm = SecretManagerService()
+            sm = SecretManagerClient()
             key = sm.get_secret_as_str("WEATHER_API_KEY")
             if key:
                 return key
