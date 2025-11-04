@@ -97,4 +97,4 @@ class SecretManagerClient:
 
 
 # Global instance for easy access
-secret_manager_service = SecretManagerService()
+secret_manager_service = SecretManagerClient()
