@@ -48,7 +48,7 @@ jobs:
           gcloud run deploy svc-airux8-optimize-${{ vars.DEV_ENV }} \
             --region=${{ vars.REGION }} \
             --image="$IMAGE_NAME" \
-            --service-account=${{ vars.JOB_AIRUX8_OPTIMIZE_SA }} \
+            --service-account=${{ vars.SVC_AIRUX8_OPTIMIZE_SA }} \
             --memory=2Gi \
             --cpu=1 \
             --timeout=900s \
