@@ -213,6 +213,15 @@ def get_storage_client() -> StorageClient:
     if backend == "gcs":
         from config.config_gcp import GCPEnv
 
+        if not GCPEnv.PROJECT_ID:
+            raise ValueError(
+                "PROJECT_ID environment variable is required when using GCS backend"
+            )
+        if not GCPEnv.BUCKET_NAME:
+            raise ValueError(
+                "BUCKET_NAME environment variable is required when using GCS backend"
+            )
+
         return GCSClient(project_id=GCPEnv.PROJECT_ID, bucket_id=GCPEnv.BUCKET_NAME)
     root = os.getenv("LOCAL_DATA_ROOT", os.path.join(os.getcwd(), "data"))
     return LocalStorageClient(root_dir=root)
