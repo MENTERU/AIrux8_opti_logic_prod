@@ -223,3 +223,50 @@ def _build_remote_path(config: dict, path_key: str) -> str:
         print(f"[Warning] Remote path construction failed: {e}")
         print("[Warning] Falling back to local path")
         return _build_local_path(config, path_key)
+
+
+def get_weather_forecast_path(store_name: str, start_date: str, end_date: str) -> str:
+    """Get the logical path for weather forecast data.
+
+    This function generates a logical path for weather forecast CSV files that can be
+    used with both GCS and local storage backends.
+
+    Args:
+        store_name: Store name (e.g., "Clea")
+        start_date: Start date in YYYY-MM-DD format
+        end_date: End date in YYYY-MM-DD format
+
+    Returns:
+        Logical path string (e.g., "05_WeatherData/02_WeatherForecast/Clea/weather_forecast_20250929_20251004.csv")
+    """
+    import os
+
+    from config.config_gcp import GCPEnv
+
+    # Determine which config to use based on storage backend
+    backend = os.getenv("STORAGE_BACKEND", "local").lower()
+
+    if backend == "gcs":
+        # Use GCP config for logical path
+        base_folder = GCPEnv.WEATHER_FORECAST_FOLDER.rstrip("/")
+    else:
+        # Use local config for logical path (relative to data root)
+        config = load_config(use_remote_paths=False)
+        weather_forecast_path = config.get("local_paths", {}).get(
+            "weather_forecast_path", "data/05_WeatherData/02_WeatherForecast"
+        )
+        # Remove "data/" prefix if present for logical path
+        if weather_forecast_path.startswith("data/"):
+            base_folder = weather_forecast_path[5:]  # Remove "data/" prefix
+        else:
+            base_folder = weather_forecast_path
+
+    # Clean dates (remove dashes)
+    start_clean = start_date.replace("-", "")
+    end_clean = end_date.replace("-", "")
+
+    # Construct path
+    filename = f"weather_forecast_{start_clean}_{end_clean}.csv"
+    logical_path = f"{base_folder}/{store_name}/{filename}"
+
+    return logical_path
