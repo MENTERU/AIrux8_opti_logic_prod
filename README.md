@@ -150,7 +150,7 @@ uv run main.py --optimize-only
 │   └── 上位20件の類似日を選択 (Select Top 20 Similar Days)
 │
 ├── 2. 最適完全日の選択 (Best Complete Day Selection)
-│   ├── 3段階優先順位システム (Three-tier Priority System)
+│   ├── 2段階優先順位システム (Three-tier Priority System)
 │   │   ├── 第1優先: 完全なデータがある日から最小電力の日を選択 (Priority 1: Select day with lowest power from complete days)
 │   │   │   └── 完全な日 = 予報日の全時刻のデータが存在 (Complete day = all forecast hours available)
 │   │   ├── 第2優先: 完全な日がない場合、欠損時間が最も少ない日を選択 (Priority 2: If no complete days, select day with least missing hours)
