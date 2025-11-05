@@ -87,6 +87,7 @@ class OptimizerRunner:
         except Exception:
             api_key = None
         if not api_key:
+            # for local development
             from config.private_information import WEATHER_API_KEY
 
             api_key = WEATHER_API_KEY
@@ -95,6 +96,7 @@ class OptimizerRunner:
         storage = get_storage_client()
         start_clean = start_date.replace("-", "")
         end_clean = end_date.replace("-", "")
+        # TODO: Change to read from 05_WeatherData/02_WeatherForecast/
         cached_logical_path = f"04_PlanningData/{self.store_name}/weather_forecast_{start_clean}_{end_clean}.csv"
 
         try:
@@ -218,7 +220,7 @@ class OptimizerRunner:
             self.load_weather_data(start_date, end_date)
 
             # Run optimization
-            self.optimizer = Optimizer(use_operating_hours=False, strategy=strategy)
+            self.optimizer = Optimizer()
             result_df = self.optimizer.optimize_all_zones(
                 forecast_df=self.weather_data,
                 features_csv_path=self.features_csv_path,
