@@ -9,6 +9,7 @@ local_paths:
   local_file_path: "data/04_PlanningData"
   weather_data_path: "data/05_WeatherData"
   weather_forecast_path: "data/05_WeatherData/02_ForecastData"
+  weather_historical_path: "data/05_WeatherData/01_HistoricalData"
 
   # Google Drive設定　（local_pathsからの相対パス）
   service_account_json: "config/gdrive_service_account.json"

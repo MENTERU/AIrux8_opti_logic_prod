@@ -4,6 +4,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+from config.utils import get_weather_historical_path
 from processing.utilities.category_mapping_loader import (
     get_default_category_value,
     map_category_series,
@@ -541,103 +542,6 @@ class AreaAggregator:
         return dataframe
 
 
-def _load_weather_forecast(
-    start_date: str,
-    end_date: str,
-    plan_dir: str,
-    weather_api_key: str,
-    coordinates: str,
-) -> Optional[pd.DataFrame]:
-    """
-    Load weather forecast from cached file if it exists, otherwise fetch from API
-
-    Args:
-        start_date: Start date in YYYY-MM-DD format
-        end_date: End date in YYYY-MM-DD format
-        weather_api_key: Weather API key for fetching data if cache is missing
-        coordinates: Coordinates for weather API
-
-    Returns:
-        Weather DataFrame if file exists or can be fetched from API, None otherwise
-    """
-    # Generate weather forecast file path with date range in filename
-    start_clean = start_date.replace("-", "")
-    end_clean = end_date.replace("-", "")
-    filename = f"weather_forecast_{start_clean}_{end_clean}.csv"
-    forecast_path = os.path.join(plan_dir, filename)
-
-    if os.path.exists(forecast_path):
-        print(f"[Run] Loading cached weather forecast: {forecast_path}")
-        try:
-            weather_df = pd.read_csv(forecast_path)
-
-            # Convert datetime column to datetime type if it exists
-            if "datetime" in weather_df.columns:
-                weather_df["datetime"] = pd.to_datetime(weather_df["datetime"])
-                print(f"[Run] Converted datetime column to datetime type")
-
-            print(f"[Run] Cached weather data loaded. Shape: {weather_df.shape}")
-            return weather_df
-        except Exception as e:
-            print(f"[Run] Error loading cached weather data: {e}")
-            return None
-    else:
-        print(f"[Run] No cached weather forecast found: {forecast_path}")
-
-        # Try to fetch weather data from API if credentials are provided
-        if weather_api_key and coordinates:
-            print("[Run] APIから天候データを取得...")
-            try:
-                from processing.utilities.weatherapi_client import (
-                    VisualCrossingWeatherAPIDataFetcher,
-                )
-
-                weather_df = VisualCrossingWeatherAPIDataFetcher(
-                    coordinates=coordinates,
-                    start_date=start_date,
-                    end_date=end_date,
-                    unit="metric",
-                    api_key=weather_api_key,
-                ).fetch()
-                if weather_df is not None:
-                    _save_weather_forecast(weather_df, start_date, end_date, plan_dir)
-                    print("[Run] 天候データをAPIから取得し、キャッシュに保存しました")
-                    return weather_df
-                else:
-                    print("[Run] APIから天候データを取得できませんでした")
-                    return None
-            except Exception as e:
-                print(f"[Run] 天候データ取得エラー: {e}")
-                return None
-        else:
-            print("[Run] 天候データが見つかりません（APIキーまたは座標が未設定）")
-            return None
-
-
-def _save_weather_forecast(
-    weather_df: pd.DataFrame, start_date: str, end_date: str, plan_dir: str
-) -> None:
-    """
-    Save weather forecast to cached file with date range in filename
-
-    Args:
-        weather_df: Weather DataFrame to save
-        start_date: Start date in YYYY-MM-DD format
-        end_date: End date in YYYY-MM-DD format
-    """
-    start_clean = start_date.replace("-", "")
-    end_clean = end_date.replace("-", "")
-    filename = f"weather_forecast_{start_clean}_{end_clean}.csv"
-
-    forecast_path = os.path.join(plan_dir, filename)
-    try:
-        os.makedirs(os.path.dirname(forecast_path), exist_ok=True)
-        weather_df.to_csv(forecast_path, index=False, encoding="utf-8-sig")
-        print(f"[Run] Weather forecast cached to: {forecast_path}")
-    except Exception as e:
-        print(f"[Run] Error saving weather forecast: {e}")
-
-
 def aggregation_runner(
     store_name: str,
     store_master_file: dict,
@@ -685,9 +589,8 @@ def aggregation_runner(
     except Exception:
         pm_processed_data = None
     try:
-        historical_weather_data = storage.read_csv(
-            f"02_PreprocessedData/{store_name}/weather_processed_{store_name}.csv"
-        )
+        weather_historical_path = get_weather_historical_path(store_name)
+        historical_weather_data = storage.read_csv(weather_historical_path)
     except Exception:
         historical_weather_data = None
 

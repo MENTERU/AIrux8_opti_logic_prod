@@ -30,6 +30,10 @@ class GCPEnv:
     WEATHER_FORECAST_FOLDER = (
         os.environ.get("WEATHER_FORECAST_FOLDER") or "05_WeatherData/02_ForecastData/"
     )
+    WEATHER_HISTORICAL_FOLDER = (
+        os.environ.get("WEATHER_HISTORICAL_FOLDER")
+        or "05_WeatherData/01_HistoricalData/"
+    )
     SERVICE_ACCOUNT_JSON = (
         os.environ.get("SERVICE_ACCOUNT_JSON") or "config/gdrive_service_account.json"
     )

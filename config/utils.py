@@ -225,11 +225,87 @@ def _build_remote_path(config: dict, path_key: str) -> str:
         return _build_local_path(config, path_key)
 
 
+def get_weather_path(
+    store_name: str,
+    weather_type: str = "historical",
+    start_date: str = None,
+    end_date: str = None,
+) -> str:
+    """Get the logical path for weather data (forecast or historical).
+
+    This function generates a logical path for weather CSV files that can be
+    used with both GCS and local storage backends.
+
+    Args:
+        store_name: Store name (e.g., "Clea")
+        weather_type: Type of weather data - "forecast" or "historical" (default: "historical")
+        start_date: Start date in YYYY-MM-DD format (required for forecast type)
+        end_date: End date in YYYY-MM-DD format (required for forecast type)
+
+    Returns:
+        Logical path string:
+        - For forecast: "05_WeatherData/02_ForecastData/Clea/weather_forecast_20250929_20251004.csv"
+        - For historical: "05_WeatherData/01_HistoricalData/Clea/weather_processed_Clea.csv"
+    """
+    import os
+
+    from config.config_gcp import GCPEnv
+
+    if weather_type not in ["forecast", "historical"]:
+        raise ValueError(
+            f"Invalid weather_type: {weather_type}. Must be 'forecast' or 'historical'"
+        )
+
+    if weather_type == "forecast":
+        if start_date is None or end_date is None:
+            raise ValueError(
+                "start_date and end_date are required for forecast weather type"
+            )
+
+    # Determine which config to use based on storage backend
+    backend = os.getenv("STORAGE_BACKEND", "local").lower()
+
+    if backend == "gcs":
+        # Use GCP config for logical path
+        if weather_type == "forecast":
+            base_folder = GCPEnv.WEATHER_FORECAST_FOLDER.rstrip("/")
+        else:
+            base_folder = GCPEnv.WEATHER_HISTORICAL_FOLDER.rstrip("/")
+    else:
+        # Use local config for logical path (relative to data root)
+        config = load_config(use_remote_paths=False)
+        if weather_type == "forecast":
+            config_path_key = "weather_forecast_path"
+            default_path = "data/05_WeatherData/02_ForecastData"
+        else:
+            config_path_key = "weather_historical_path"
+            default_path = "data/05_WeatherData/01_HistoricalData"
+
+        weather_path = config.get("local_paths", {}).get(config_path_key, default_path)
+        # Remove "data/" prefix if present for logical path
+        if weather_path.startswith("data/"):
+            base_folder = weather_path[5:]  # Remove "data/" prefix
+        else:
+            base_folder = weather_path
+
+    # Construct filename based on weather type
+    if weather_type == "forecast":
+        # Clean dates (remove dashes)
+        start_clean = start_date.replace("-", "")
+        end_clean = end_date.replace("-", "")
+        filename = f"weather_forecast_{start_clean}_{end_clean}.csv"
+    else:
+        filename = f"weather_processed_{store_name}.csv"
+
+    logical_path = f"{base_folder}/{store_name}/{filename}"
+
+    return logical_path
+
+
 def get_weather_forecast_path(store_name: str, start_date: str, end_date: str) -> str:
     """Get the logical path for weather forecast data.
 
-    This function generates a logical path for weather forecast CSV files that can be
-    used with both GCS and local storage backends.
+    This function is a convenience wrapper around get_weather_path().
 
     Args:
         store_name: Store name (e.g., "Clea")
@@ -237,36 +313,25 @@ def get_weather_forecast_path(store_name: str, start_date: str, end_date: str) -
         end_date: End date in YYYY-MM-DD format
 
     Returns:
-        Logical path string (e.g., "05_WeatherData/02_WeatherForecast/Clea/weather_forecast_20250929_20251004.csv")
+        Logical path string (e.g., "05_WeatherData/02_ForecastData/Clea/weather_forecast_20250929_20251004.csv")
     """
-    import os
+    return get_weather_path(
+        store_name=store_name,
+        weather_type="forecast",
+        start_date=start_date,
+        end_date=end_date,
+    )
 
-    from config.config_gcp import GCPEnv
 
-    # Determine which config to use based on storage backend
-    backend = os.getenv("STORAGE_BACKEND", "local").lower()
+def get_weather_historical_path(store_name: str) -> str:
+    """Get the logical path for weather historical processed data.
 
-    if backend == "gcs":
-        # Use GCP config for logical path
-        base_folder = GCPEnv.WEATHER_FORECAST_FOLDER.rstrip("/")
-    else:
-        # Use local config for logical path (relative to data root)
-        config = load_config(use_remote_paths=False)
-        weather_forecast_path = config.get("local_paths", {}).get(
-            "weather_forecast_path", "data/05_WeatherData/02_WeatherForecast"
-        )
-        # Remove "data/" prefix if present for logical path
-        if weather_forecast_path.startswith("data/"):
-            base_folder = weather_forecast_path[5:]  # Remove "data/" prefix
-        else:
-            base_folder = weather_forecast_path
+    This function is a convenience wrapper around get_weather_path().
 
-    # Clean dates (remove dashes)
-    start_clean = start_date.replace("-", "")
-    end_clean = end_date.replace("-", "")
+    Args:
+        store_name: Store name (e.g., "Clea")
 
-    # Construct path
-    filename = f"weather_forecast_{start_clean}_{end_clean}.csv"
-    logical_path = f"{base_folder}/{store_name}/{filename}"
-
-    return logical_path
+    Returns:
+        Logical path string (e.g., "05_WeatherData/01_HistoricalData/Clea/weather_processed_Clea.csv")
+    """
+    return get_weather_path(store_name=store_name, weather_type="historical")
