@@ -2,14 +2,13 @@
 Simplified optimization runner that orchestrates zone-based optimization.
 """
 
-import logging
 import os
 from datetime import datetime, timedelta
 from typing import Any, Dict
 
 import pandas as pd
 
-from config.utils import get_data_path
+from config.utils import get_data_path, get_weather_forecast_path
 from processing.utilities.master_data_loader import master_data_loader_runner
 from processing.utilities.weatherapi_client import VisualCrossingWeatherAPIDataFetcher
 from service.storage import get_storage_client
@@ -87,15 +86,17 @@ class OptimizerRunner:
         except Exception:
             api_key = None
         if not api_key:
+            # for local development
             from config.private_information import WEATHER_API_KEY
 
             api_key = WEATHER_API_KEY
 
         # Check for cached weather forecast first (storage-backed)
         storage = get_storage_client()
-        start_clean = start_date.replace("-", "")
-        end_clean = end_date.replace("-", "")
-        cached_logical_path = f"04_PlanningData/{self.store_name}/weather_forecast_{start_clean}_{end_clean}.csv"
+        # Get weather forecast path from config
+        cached_logical_path = get_weather_forecast_path(
+            store_name=self.store_name, start_date=start_date, end_date=end_date
+        )
 
         try:
             self.weather_data = storage.read_csv(cached_logical_path)
@@ -103,15 +104,17 @@ class OptimizerRunner:
                 self.weather_data["datetime"] = pd.to_datetime(
                     self.weather_data["datetime"]
                 )
-            logging.info(
-                f"Cached weather data loaded. Shape: {self.weather_data.shape}"
+            print(
+                f"[OptimizerRunner] Cached weather data loaded. Shape: {self.weather_data.shape}"
             )
             return
         except Exception:
             pass
 
-        logging.info(f"Fetching weather forecast from {start_date} to {end_date}")
-        logging.info(f"Using coordinates: {coordinates}")
+        print(
+            f"[OptimizerRunner] Fetching weather forecast from {start_date} to {end_date}"
+        )
+        print(f"[OptimizerRunner] Using coordinates: {coordinates}")
 
         # Create weather API client and fetch forecast data
         weather_fetcher = VisualCrossingWeatherAPIDataFetcher(
@@ -138,13 +141,15 @@ class OptimizerRunner:
         # Save to cache via storage client
         try:
             storage.write_csv(self.weather_data, cached_logical_path)
-            logging.info(f"Weather forecast cached to: {cached_logical_path}")
+            print(
+                f"[OptimizerRunner] Weather forecast cached to: {cached_logical_path}"
+            )
         except Exception as e:
-            logging.warning(f"Error saving weather forecast to cache: {e}")
+            print(f"[OptimizerRunner] Error saving weather forecast to cache: {e}")
 
-        logging.info(f"Loaded master data for store {self.store_name}")
-        logging.info(
-            f"Fetched weather forecast for {start_date} to {end_date}: {len(self.weather_data)} hours"
+        print(f"[OptimizerRunner] Loaded master data for store {self.store_name}")
+        print(
+            f"[OptimizerRunner] Fetched weather forecast for {start_date} to {end_date}: {len(self.weather_data)} hours"
         )
 
     def run_optimization(
@@ -188,8 +193,8 @@ class OptimizerRunner:
             today = datetime.now().date()
             start_date = today.strftime("%Y-%m-%d")
             end_date = (today + timedelta(days=3)).strftime("%Y-%m-%d")
-            logging.info(
-                f"No dates provided, using default period: {start_date} to {end_date}"
+            print(
+                f"[OptimizerRunner] No dates provided, using default period: {start_date} to {end_date}"
             )
         elif end_date is None:
             end_date = start_date
@@ -210,15 +215,15 @@ class OptimizerRunner:
             else:
                 raise e
 
-        logging.info(
-            f"Running zone-based optimization for {start_date} to {end_date}..."
+        print(
+            f"[OptimizerRunner] Running zone-based optimization for {start_date} to {end_date}..."
         )
         try:
             # Load data (master data and weather forecast)
             self.load_weather_data(start_date, end_date)
 
             # Run optimization
-            self.optimizer = Optimizer(use_operating_hours=False, strategy=strategy)
+            self.optimizer = Optimizer()
             result_df = self.optimizer.optimize_all_zones(
                 forecast_df=self.weather_data,
                 features_csv_path=self.features_csv_path,
@@ -226,7 +231,7 @@ class OptimizerRunner:
             )
 
             if result_df.empty:
-                logging.warning("Zone optimization returned no data")
+                print("[OptimizerRunner] Zone optimization returned no data")
                 return {
                     "start_date": start_date,
                     "end_date": end_date,
@@ -238,13 +243,13 @@ class OptimizerRunner:
             self.results["start_date"] = start_date
             self.results["end_date"] = end_date
 
-            logging.info(
-                f"Zone optimization completed successfully: {len(result_df)} results"
+            print(
+                f"[OptimizerRunner] Zone optimization completed successfully: {len(result_df)} results"
             )
             return self.results
 
         except Exception as e:
-            logging.error(f"Zone optimization failed: {e}")
+            print(f"[OptimizerRunner] Zone optimization failed: {e}")
             return {
                 "start_date": start_date,
                 "end_date": end_date,
@@ -288,18 +293,17 @@ class OptimizerRunner:
 
         output_logical_path = f"04_PlanningData/{self.store_name}/{filename}"
 
-        # Save results via storage with explicit logging and error surfacing
-        logging.info(
-            f"Saving optimization results to storage path: {output_logical_path}"
+        # Save results via storage with explicit error handling
+        print(
+            f"[OptimizerRunner] Saving optimization results to storage path: {output_logical_path}"
         )
         try:
             storage.write_csv(self.results["optimization_result"], output_logical_path)
         except Exception as error:
-            logging.error(
-                f"Failed to save optimization results to {output_logical_path}: {error}",
-                exc_info=True,
+            print(
+                f"[OptimizerRunner] Failed to save optimization results to {output_logical_path}: {error}"
             )
             raise
 
-        logging.info(f"Optimization results saved to: {output_logical_path}")
+        print(f"[OptimizerRunner] Optimization results saved to: {output_logical_path}")
         return output_logical_path

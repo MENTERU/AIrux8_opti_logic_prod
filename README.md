@@ -111,10 +111,10 @@ uv run main.py --optimize-only
 
 #### 1. 基本概念 (Basic Concept)
 
-**履歴パターンマッチング (Historical Pattern Matching):**
-- 天気予報データと過去の履歴データを比較 (Compare weather forecast data with historical data)
-- 類似した天候条件（外気温、日射量）の履歴パターンを検索 (Search for historical patterns with similar weather conditions - outdoor temperature, solar radiation)
-- 最適な設定パターンを学習・適用 (Learn and apply optimal setting patterns)
+**日単位履歴パターンマッチング (Day-level Historical Pattern Matching):**
+- 天気予報データを日単位でグループ化し、過去の類似天候日の履歴データと比較 (Group weather forecast data by day and compare with historical data from similar weather days)
+- 予報日の1日全体と類似した過去の日を検索し、その日の最適なAC設定パターンを適用 (Search for past days similar to the entire forecast day and apply optimal AC setting patterns from that day)
+- 類似日選択後、その日の各時刻の設定パターン（最低電力消費パターン）を使用 (After selecting similar day, use setting patterns for each hour from that day (lowest power consumption patterns))
 
 #### 2. 最適化フロー (Optimization Flow)
 
@@ -127,87 +127,86 @@ uv run main.py --optimize-only
 ├── 天気予報データ (Weather Forecast Data)
 │   ├── 外気温 (Outdoor Temperature)
 │   ├── 日射量 (Solar Radiation)
-│   └── 湿度 (Humidity)
+│   └── 日時 (Datetime)
 ├── 履歴データ (Historical Data)
 │   ├── 過去の天候データ (Past Weather Data)
 │   ├── AC設定履歴 (AC Setting History)
-│   └── 電力消費履歴 (Power Consumption History)
+│   ├── 電力消費履歴 (Power Consumption History)
+│   └── 室内温度履歴 (Indoor Temperature History)
 └── マスターデータ (Master Data)
-    ├── 営業時間設定 (Operating Hours)
-    ├── 快適温度範囲 (Comfort Temperature Range)
+    ├── 営業時間設定 (Operating Hours) - オプション (Optional)
     └── ゾーン設定 (Zone Settings)
 
-各時刻・各ゾーンに対して (For Each Time Point & Zone):
-├── 1. 営業時間判定 (Operating Hours Check)
-│   ├── 営業時間外 (Non-Business Hours) → OFFモード設定 (Set OFF Mode)
-│   └── 営業時間内 (Business Hours) → 最適化実行 (Execute Optimization)
+各ゾーン・各予報日に対して (For Each Zone & Forecast Day):
+├── 1. 日単位類似度計算 (Day-level Similarity Calculation)
+│   ├── 予報日の1日平均外気温・日射量を計算 (Calculate daily mean outdoor temp & solar radiation for forecast day)
+│   ├── 履歴データから同一ゾーンの各日の平均外気温・日射量を計算 (Calculate daily mean values for each historical day in same zone)
+│   ├── Z-score正規化による標準化 (Standardization using Z-score normalization)
+│   │   ├── 履歴データ全体の平均・標準偏差を計算 (Calculate mean & std dev for all historical data)
+│   │   └── 予報日と各履歴日のZ-scoreを計算 (Calculate Z-scores for forecast day and each historical day)
+│   ├── 類似度スコア計算 (Similarity Score Calculation)
+│   │   ├── スコア = 0.7 × |外気温Z-score差| + 0.3 × |日射量Z-score差| (Score = 0.7 × |temp_z_diff| + 0.3 × |solar_z_diff|)
+│   │   └── スコアが小さいほど類似度が高い (Lower score = higher similarity)
+│   └── 上位20件の類似日を選択 (Select Top 20 Similar Days)
 │
-├── 2. 類似パターン検索 (Similar Pattern Search)
-│   ├── 同一時刻の履歴データを抽出 (Extract Historical Data for Same Hour)
-│   ├── 天候類似度計算 (Weather Similarity Calculation)
-│   │   ├── 外気温差 ≤ ±0.5°C (Outdoor Temp Diff ≤ ±0.5°C)
-│   │   └── Z-score正規化による類似度スコア (Z-score Normalized Similarity Score)
-│   └── 上位10件の類似パターンを選択 (Select Top 10 Similar Patterns)
+├── 2. 最適完全日の選択 (Best Complete Day Selection)
+│   ├── 2段階優先順位システム (Three-tier Priority System)
+│   │   ├── 第1優先: 完全なデータがある日から最小電力の日を選択 (Priority 1: Select day with lowest power from complete days)
+│   │   │   └── 完全な日 = 予報日の全時刻のデータが存在 (Complete day = all forecast hours available)
+│   │   ├── 第2優先: 完全な日がない場合、欠損時間が最も少ない日を選択 (Priority 2: If no complete days, select day with least missing hours)
+│   │   │   └── 同じ欠損数の場合、最小電力の日を優先 (If same missing count, prioritize lowest power)
+│   └── 選択された日のパターンを抽出 (Extract Patterns from Selected Day)
+│       ├── 各時刻ごとに最低電力消費パターンを1つ選択 (Select one lowest power pattern for each hour)
+│       └── 1日1パターン/時刻のデータセットを作成 (Create dataset with one pattern per hour)
 │
-├── 3. 快適性フィルタリング (Comfort Filtering)
-│   ├── 快適温度範囲内のパターンのみを保持 (Keep Only Patterns Within Comfort Range)
-│   └── 季節・月別の快適温度範囲を適用 (Apply Seasonal/Monthly Comfort Range)
+├── 3. 時刻別パターン適用 (Hourly Pattern Application)
+│   ├── 予報日の各時刻に対して (For Each Hour in Forecast Day)
+│   ├── 選択された完全日の同一時刻のパターンを使用 (Use pattern from same hour in selected complete day)
+│   ├── AC設定を抽出 (Extract AC Settings)
+│   │   ├── 設定温度 (Set Temperature)
+│   │   ├── 運転モード (Operation Mode)
+│   │   ├── ファン速度 (Fan Speed)
+│   │   └── ON/OFF状態 (ON/OFF Status)
+│   └── 履歴パターンから関連値を取得 (Extract Related Values from Historical Pattern)
+│       ├── 履歴電力消費 (Historical Power Consumption)
+│       │   └── 選択されたパターンのadjusted_powerを使用 (Use adjusted_power from selected pattern)
+│       └── 履歴室内温度 (Historical Indoor Temperature)
+│           └── 選択されたパターンのIndoor Temp.を使用 (Use Indoor Temp. from selected pattern)
 │
-├── 4. スコアリング・選択 (Scoring & Selection)
-│   ├── 電力スコア計算 (Power Score Calculation)
-│   │   └── 電力消費量の正規化スコア (Normalized Power Consumption Score)
-│   ├── 温度スコア計算 (Temperature Score Calculation)
-│   │   └── 快適温度からの偏差スコア (Deviation from Comfort Temperature Score)
-│   ├── 時間重み付け (Time-based Weighting)
-│   │   ├── 朝 (Morning): 温度重視 (Temp: 80%, Power: 20%)
-│   │   ├── 午後 (Afternoon): バランス (Temp: 50%, Power: 50%)
-│   │   └── 夕方 (Evening): 電力重視 (Temp: 30%, Power: 70%)
-│   └── 最適パターン選択 (Optimal Pattern Selection)
-│       └── 最小複合スコアのパターンを選択 (Select Pattern with Minimum Combined Score)
-│
-└── 5. 結果出力 (Result Output)
+└── 4. 結果出力 (Result Output)
     ├── 最適AC設定 (Optimal AC Settings)
     │   ├── 設定温度 (Set Temperature)
     │   ├── 運転モード (Operation Mode)
-    │   └── ファン速度 (Fan Speed)
-    ├── 予測結果 (Prediction Results)
-    │   ├── 予測室温 (Predicted Indoor Temperature)
-    │   └── 予測電力消費 (Predicted Power Consumption)
+    │   ├── ファン速度 (Fan Speed)
+    │   └── ON/OFF状態 (ON/OFF Status)
+    ├── 履歴参照値 (Historical Reference Values)
+    │   ├── 履歴室内温度 (Historical Indoor Temperature)
+    │   │   └── マッチした履歴パターンから取得 (From matched historical pattern)
+    │   └── 履歴電力消費 (Historical Power Consumption)
+    │       └── マッチした履歴パターンから取得 (From matched historical pattern)
     └── メタデータ (Metadata)
-        ├── 類似度スコア (Similarity Score)
-        ├── 複合スコア (Combined Score)
-        └── 使用した履歴データ (Used Historical Data)
+        ├── 使用した履歴日の日付 (Historical Date Used)
+        ├── 使用した履歴データの日時 (Historical Datetime Used)
+        ├── 履歴日の外気温・日射量 (Historical Outdoor Temp & Solar Radiation)
+        └── 予報日の外気温・日射量 (Forecast Outdoor Temp & Solar Radiation)
 ```
-
-#### 3. アルゴリズムの特徴 (Algorithm Features)
-
-**天候類似度計算 (Weather Similarity Calculation):**
-- 外気温の重み: 70% (Outdoor Temperature Weight: 70%)
-- 日射量の重み: 30% (Solar Radiation Weight: 30%)
-- Z-score正規化による標準化 (Standardization using Z-score normalization)
-- 温度許容差: ±0.5°C (Temperature Tolerance: ±0.5°C)
-
-**時間重み付けシステム (Time-based Weighting System):**
-- 朝 (6:00-12:00): 快適性重視 (Comfort Priority)
-- 午後 (12:00-18:00): バランス重視 (Balance Priority)
-- 夕方 (18:00-24:00): 省エネ重視 (Energy Saving Priority)
-
-**快適性制約 (Comfort Constraints):**
-- 季節別快適温度範囲の適用 (Apply Seasonal Comfort Temperature Range)
-- 快適範囲外のパターンは除外 (Exclude Patterns Outside Comfort Range)
-- 快適性を最優先に保証 (Guarantee Comfort as Top Priority)
 
 #### 4. 最適化戦略 (Optimization Strategy)
 
-**多目的最適化 (Multi-objective Optimization):**
-- 目的1: 電力消費最小化 (Objective 1: Minimize Power Consumption)
-- 目的2: 快適性維持 (Objective 2: Maintain Comfort)
-- 重み付けによるバランス調整 (Balance Adjustment through Weighting)
+**日単位マッチング戦略 (Day-level Matching Strategy):**
+- 予報日の1日全体と類似した過去の日を検索することで、日中の変動パターンも考慮 (By searching for past days similar to entire forecast day, also consider intraday variation patterns)
+- 同一日のパターンを使用することで、時刻間の一貫性を保証 (Using patterns from same day ensures consistency across hours)
+- 電力消費最小化を優先し、過去の実績から最適な設定を学習 (Prioritize power consumption minimization, learning optimal settings from past performance)
+
+**完全性重視の選択 (Completeness-first Selection):**
+- データの完全性を最優先し、欠損データの影響を最小化 (Prioritize data completeness to minimize impact of missing data)
+- 完全なデータがない場合でも、可能な限り多くの時刻のデータを提供 (Even when complete data is unavailable, provide data for as many hours as possible)
+- 段階的なフォールバックにより、常に最適な結果を提供 (Progressive fallback ensures optimal results are always provided)
 
 **学習型最適化 (Learning-based Optimization):**
-- 過去の実績データから学習 (Learn from Past Performance Data)
-- 類似条件での最適解を適用 (Apply Optimal Solutions for Similar Conditions)
-- 継続的な改善と適応 (Continuous Improvement and Adaptation)
+- 過去の実績データから学習し、類似条件での最適解を適用 (Learn from past performance data and apply optimal solutions for similar conditions)
+- 日単位の類似性により、季節性や天候パターンを考慮 (Day-level similarity considers seasonality and weather patterns)
+- 継続的な改善と適応により、システムの精度を向上 (Continuous improvement and adaptation improve system accuracy)
 
 
 # GCP Settings 

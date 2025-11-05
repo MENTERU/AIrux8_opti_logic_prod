@@ -4,7 +4,7 @@ from typing import List, Optional, Tuple
 
 import pandas as pd
 
-from config.utils import get_data_path
+from config.utils import get_data_path, get_weather_historical_path
 from processing.utilities.category_mapping_loader import (
     get_default_category_value,
     map_category_series,
@@ -466,9 +466,10 @@ class DataPreprocessor:
                 )
                 weather_sorted = weather_data
 
+            weather_path = get_weather_historical_path(self.store_name)
             self.storage.write_csv(
                 weather_sorted,
-                f"{self.output_prefix}/weather_processed_{self.store_name}.csv",
+                weather_path,
             )
 
         # 月別温度レンジ分析Excel出力
@@ -518,9 +519,7 @@ def preprocessing_runner(
     pm_processed_data = preprocessor.preprocess_pm(pm_raw_data, power_std_multiplier)
 
     # 天候データの処理
-    weather_logical_path = (
-        f"02_PreprocessedData/{store_name}/weather_processed_{store_name}.csv"
-    )
+    weather_logical_path = get_weather_historical_path(store_name)
     try:
         historical_weather_data = preprocessor.storage.read_csv(weather_logical_path)
         print(f"[Preprocess] キャッシュされた天候データを使用: {weather_logical_path}")
