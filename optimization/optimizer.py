@@ -28,22 +28,66 @@ class Optimizer:
     This class implements the optimization algorithm to find optimal AC settings
     per zone by matching similar historical weather patterns and selecting the
     best-performing settings that minimize power consumption while maintaining comfort.
+
+    Supports two optimization modes:
+    - Whole day mode (hour_block_size=None): Selects complete 24-hour historical days
+    - Hour block mode (hour_block_size is integer >= 2): Selects best N-hour blocks
+      from candidate historical days, where each block can come from different days
+
+    Both modes filter for AC ON status only and support optional forecast hour range filtering.
     """
 
     def __init__(
         self,
         use_operating_hours: bool = False,
+        hour_block_size: Optional[int] = 3,
+        forecast_hour_range: Optional[Tuple[int, int]] = (8, 19),
     ):
         """
         Initialize the Optimizer with configuration.
 
         Args:
             use_operating_hours: If True, filter by zone operating hours (default: False)
+            hour_block_size: Number of consecutive hours to select (default 3).
+                Use None for whole day mode (24 hours). Can be any positive integer >= 2.
+            forecast_hour_range: Optional tuple (start_hour, end_hour) for forecast filtering
+                (e.g., (8, 19) for 8 AM to 7 PM). If None, processes all 24 hours.
         """
-        # Weather weights for similarity score calculation
+        # Weather weights for block distance calculation
         self.WEATHER_WEIGHTS = {"temperature": 0.7, "solar_radiation": 0.3}
         # Whether to use zone operating hours for optimization (default: False)
         self.use_operating_hours = use_operating_hours
+
+        # Validate hour_block_size
+        if hour_block_size is not None and (
+            not isinstance(hour_block_size, int) or hour_block_size < 2
+        ):
+            raise ValueError(
+                f"hour_block_size must be None (whole day mode) or an integer >= 2, "
+                f"got {hour_block_size}"
+            )
+        self.hour_block_size = hour_block_size
+
+        # Validate forecast_hour_range
+        if forecast_hour_range is not None:
+            if (
+                not isinstance(forecast_hour_range, tuple)
+                or len(forecast_hour_range) != 2
+            ):
+                raise ValueError(
+                    f"forecast_hour_range must be a tuple of (start_hour, end_hour), "
+                    f"got {forecast_hour_range}"
+                )
+            start_hour, end_hour = forecast_hour_range
+            if not (
+                0 <= start_hour < 24 and 0 < end_hour <= 24 and start_hour < end_hour
+            ):
+                raise ValueError(
+                    f"forecast_hour_range must have start_hour in [0, 23] and end_hour in [1, 24] "
+                    f"with start_hour < end_hour, got {forecast_hour_range}"
+                )
+        self.forecast_hour_range = forecast_hour_range
+
         self.category_mappings = self._load_category_mappings()
 
     def _load_category_mappings(self) -> Dict:
@@ -91,11 +135,17 @@ class Optimizer:
         """
         Load features_processed_Clea.csv and filter valid records.
 
+        Filters for records where:
+        - Indoor Temp. is not null
+        - adjusted_power > 0
+        - Outdoor Temp. and Solar Radiation are not null
+        - A/C ON/OFF > 0 (AC must be ON)
+
         Args:
             features_csv_path: Path to the features CSV file
 
         Returns:
-            DataFrame ready for pattern matching
+            DataFrame ready for pattern matching (only AC ON records)
         """
         logging.info(f"Loading historical patterns from {features_csv_path}")
 
@@ -105,12 +155,16 @@ class Optimizer:
         # Convert datetime column
         df["Datetime"] = pd.to_datetime(df["Datetime"])
 
-        # Filter valid records: non-null Indoor Temp., positive adjusted_power
+        # Add Date column for day-level grouping
+        df["Date"] = df["Datetime"].dt.date
+
+        # Filter valid records: non-null Indoor Temp., positive adjusted_power, AC ON only
         valid_mask = (
             df["Indoor Temp."].notna()
             & (df["adjusted_power"] > 0)
             & df["Outdoor Temp."].notna()
             & df["Solar Radiation"].notna()
+            & (df["A/C ON/OFF"] > 0)  # Only AC ON status
         )
 
         df_filtered = df[valid_mask].copy()
@@ -130,7 +184,7 @@ class Optimizer:
         historical_df: pd.DataFrame,
         forecast_day_data: pd.DataFrame,
         zone: str,
-        n_top: int = 10,
+        n_top: int = 20,
     ) -> List:
         """
         Find similar historical days for a given forecast day.
@@ -196,7 +250,7 @@ class Optimizer:
             else 0
         )
 
-        # Calculate day-level similarity score (lower is better)
+        # Calculate day-level distance score (lower is better)
         daily_hist["score"] = self.WEATHER_WEIGHTS["temperature"] * abs(
             daily_hist["temp_z"] - forecast_temp_z
         ) + self.WEATHER_WEIGHTS["solar_radiation"] * abs(
@@ -340,6 +394,274 @@ class Optimizer:
 
         return best_day, best_day_patterns
 
+    def _calculate_hour_block_distance(
+        self,
+        forecast_block: pd.DataFrame,
+        historical_block: pd.DataFrame,
+    ) -> float:
+        """
+        Calculate distance between forecast hour block and historical hour block.
+
+        Args:
+            forecast_block: DataFrame with forecast weather for N hours
+            historical_block: DataFrame with historical weather for N hours
+
+        Returns:
+            Weather distance (lower is better, represents how similar the blocks are)
+        """
+        # Calculate mean weather values for each block
+        forecast_temp_mean = forecast_block["Outdoor Temp."].mean()
+        forecast_solar_mean = forecast_block["Solar Radiation"].mean()
+
+        historical_temp_mean = historical_block["Outdoor Temp."].mean()
+        historical_solar_mean = historical_block["Solar Radiation"].mean()
+
+        # Calculate z-scores for normalization (using historical data statistics)
+        # Get historical data statistics for normalization
+        hist_temp_std = historical_block["Outdoor Temp."].std()
+        hist_solar_std = historical_block["Solar Radiation"].std()
+
+        # Use simple difference if standard deviation is 0 (all values same)
+        if hist_temp_std > 0:
+            temp_diff = abs(forecast_temp_mean - historical_temp_mean) / hist_temp_std
+        else:
+            temp_diff = abs(forecast_temp_mean - historical_temp_mean)
+
+        if hist_solar_std > 0:
+            solar_diff = (
+                abs(forecast_solar_mean - historical_solar_mean) / hist_solar_std
+            )
+        else:
+            solar_diff = abs(forecast_solar_mean - historical_solar_mean)
+
+        # Calculate weighted weather distance (lower is better)
+        weather_distance = (
+            self.WEATHER_WEIGHTS["temperature"] * temp_diff
+            + self.WEATHER_WEIGHTS["solar_radiation"] * solar_diff
+        )
+
+        return weather_distance
+
+    def _select_best_hour_blocks(
+        self,
+        historical_df: pd.DataFrame,
+        zone: str,
+        top_days: List,
+        forecast_day_data: pd.DataFrame,
+        master_data: dict,
+    ) -> Dict[int, pd.Series]:
+        """
+        Select best N-hour blocks from candidate days for hour block mode.
+
+        For each forecast hour block (consecutive N hours), finds the best matching
+        N-hour block from all candidate historical days where AC is ON.
+
+        Args:
+            historical_df: Historical data DataFrame (already filtered for AC ON)
+            zone: Zone name to filter by
+            top_days: List of Date objects for similar days
+            forecast_day_data: Forecast data for the day
+            master_data: Master data dictionary (unused, reserved for future use)
+
+        Returns:
+            Dictionary mapping forecast hour → best historical pattern row (pd.Series)
+        """
+        # Filter by zone (AC ON filtering already done in load_historical_patterns)
+        zone_data = historical_df[historical_df["zone"] == zone].copy()
+
+        if len(zone_data) == 0 or "Date" not in zone_data.columns:
+            return {}
+
+        # Optimize: Compute hour column once for all zone data
+        zone_data["hour"] = zone_data["Datetime"].dt.hour
+
+        # Extract forecast date for display
+        forecast_date = pd.to_datetime(forecast_day_data["datetime"].iloc[0]).date()
+
+        # Get forecast hours in order (preserve order from forecast_day_data)
+        forecast_hours_ordered = pd.to_datetime(
+            forecast_day_data["datetime"]
+        ).dt.hour.tolist()
+        # Get unique hours while preserving order
+        seen = set()
+        unique_forecast_hours = []
+        for hour in forecast_hours_ordered:
+            if hour not in seen:
+                seen.add(hour)
+                unique_forecast_hours.append(hour)
+
+        print(
+            f"\n[Zone: {zone}] Forecast Date: {forecast_date} | Processing {len(unique_forecast_hours)} forecast hours: {unique_forecast_hours}"
+        )
+
+        # Group forecast hours into consecutive non-overlapping blocks of hour_block_size
+        hour_blocks = []
+        block_size = self.hour_block_size
+        current_block = []
+
+        for hour in unique_forecast_hours:
+            if len(current_block) == 0:
+                # Start new block
+                current_block = [hour]
+            elif hour == current_block[-1] + 1:  # consecutive hour
+                # Consecutive hour, add to current block
+                current_block.append(hour)
+                if len(current_block) == block_size:
+                    # Block is complete, add it and start new block
+                    hour_blocks.append(current_block)
+                    current_block = []
+            else:
+                # Not consecutive, save current block if it has any hours, then start new block
+                if len(current_block) > 0:
+                    hour_blocks.append(current_block)
+                current_block = [hour]
+
+        # Add remaining block if any
+        if len(current_block) > 0:
+            hour_blocks.append(current_block)
+
+        print(
+            f"[Zone: {zone}] Forecast Date: {forecast_date} | Grouped into {len(hour_blocks)} hour block(s) (block_size={block_size}): {hour_blocks}"
+        )
+
+        # Dictionary to store best pattern for each hour
+        patterns_by_hour = {}
+
+        # Process each forecast hour block
+        for block_idx, hour_block in enumerate(hour_blocks, 1):
+            # Extract forecast weather for this hour block
+            forecast_block = forecast_day_data[
+                pd.to_datetime(forecast_day_data["datetime"]).dt.hour.isin(hour_block)
+            ].copy()
+
+            if len(forecast_block) == 0:
+                continue
+
+            actual_block_size = len(
+                hour_block
+            )  # May be smaller than block_size for last incomplete block
+
+            # Skip if block size is 0 (shouldn't happen, but defensive check)
+            if actual_block_size == 0:
+                continue
+
+            print(
+                f"\n[Zone: {zone}] Forecast Date: {forecast_date} | Block {block_idx}/{len(hour_blocks)}: Forecast hours {hour_block} (size={actual_block_size})"
+            )
+
+            best_block_candidates = []
+
+            # Evaluate each candidate day
+            for day_date in top_days:
+                day_data = zone_data[zone_data["Date"] == day_date].copy()
+                if len(day_data) == 0:
+                    continue
+
+                # Find all possible consecutive blocks in this day
+                # that match the forecast hour block size
+                day_hours = sorted(day_data["hour"].unique())
+
+                # Need at least actual_block_size hours to form a block
+                if len(day_hours) < actual_block_size:
+                    continue
+
+                # Try all possible consecutive blocks of actual_block_size in this day
+                for start_idx in range(len(day_hours) - actual_block_size + 1):
+                    candidate_hours = day_hours[
+                        start_idx : start_idx + actual_block_size
+                    ]
+
+                    # Fix 1: Validate that candidate hours are actually consecutive
+                    expected_consecutive = list(
+                        range(
+                            candidate_hours[0], candidate_hours[0] + actual_block_size
+                        )
+                    )
+                    if candidate_hours != expected_consecutive:
+                        # Skip non-consecutive blocks
+                        continue
+
+                    candidate_block = day_data[
+                        day_data["hour"].isin(candidate_hours)
+                    ].copy()
+
+                    if len(candidate_block) == 0:
+                        continue
+
+                    # Calculate weather distance for this candidate block
+                    weather_distance = self._calculate_hour_block_distance(
+                        forecast_block, candidate_block
+                    )
+
+                    # Calculate average power for this block
+                    avg_power = candidate_block["adjusted_power"].mean()
+
+                    best_block_candidates.append(
+                        {
+                            "weather_distance": weather_distance,
+                            "avg_power": avg_power,
+                            "block_data": candidate_block,
+                            "hours": candidate_hours,
+                        }
+                    )
+
+            # Select best block (lowest weather distance, then lowest power)
+            if len(best_block_candidates) > 0:
+                best_candidate = min(
+                    best_block_candidates,
+                    key=lambda x: (x["weather_distance"], x["avg_power"]),
+                )
+
+                print(
+                    f"  ✓ Selected best block: hours {best_candidate['hours']} "
+                    f"(weather_distance={best_candidate['weather_distance']:.3f}, "
+                    f"avg_power={best_candidate['avg_power']:.0f}W) "
+                    f"from {len(best_block_candidates)} candidates"
+                )
+
+                # Map each hour in forecast block to corresponding hour in historical block
+                # Use positional mapping: forecast block position i maps to historical block position i
+                historical_block_data = best_candidate["block_data"]
+                historical_hours_sorted = sorted(historical_block_data["hour"].unique())
+                forecast_hours_sorted = sorted(hour_block)
+
+                print(
+                    f"  → Mapping forecast hours {forecast_hours_sorted} → historical hours {historical_hours_sorted} (positional)"
+                )
+
+                # Map by position: forecast hour at position i → historical hour at position i
+                for idx, forecast_hour in enumerate(forecast_hours_sorted):
+                    if idx < len(historical_hours_sorted):
+                        hist_hour = historical_hours_sorted[idx]
+                    else:
+                        # Fallback: use last historical hour if forecast block is larger
+                        hist_hour = historical_hours_sorted[-1]
+
+                    # Get the row(s) for this historical hour
+                    hist_rows = historical_block_data[
+                        historical_block_data["hour"] == hist_hour
+                    ]
+
+                    if len(hist_rows) == 0:
+                        # Should not happen, but defensive check
+                        continue
+
+                    # If multiple rows for same hour, select lowest power
+                    if len(hist_rows) > 1:
+                        hist_row = hist_rows.sort_values("adjusted_power").iloc[0]
+                    else:
+                        hist_row = hist_rows.iloc[0]
+
+                    patterns_by_hour[forecast_hour] = hist_row
+            else:
+                print(f"  ✗ No valid candidates found for forecast hours {hour_block}")
+
+        print(
+            f"\n[Zone: {zone}] Forecast Date: {forecast_date} | Successfully mapped {len(patterns_by_hour)}/{len(unique_forecast_hours)} hours"
+        )
+
+        return patterns_by_hour
+
     def _optimize_zone_for_forecast(
         self,
         historical_df: pd.DataFrame,
@@ -350,8 +672,12 @@ class Optimizer:
         """
         Main optimization function for a single zone.
 
+        Supports two modes:
+        - Whole day mode (hour_block_size=None): Selects complete historical days
+        - Hour block mode (hour_block_size is integer): Selects best N-hour blocks from candidate days
+
         Args:
-            historical_df: Historical patterns DataFrame
+            historical_df: Historical patterns DataFrame (already filtered for AC ON)
             forecast_df: Forecast weather DataFrame
             zone: Zone name to optimize
             master_data: Master data dictionary
@@ -364,6 +690,21 @@ class Optimizer:
             start_hour, end_hour = get_zone_operating_hours(master_data, zone)
         else:
             start_hour, end_hour = 0, 24  # All 24 hours
+
+        # Apply forecast_hour_range filter if specified
+        forecast_df_original = forecast_df.copy()
+        forecast_df_working = forecast_df.copy()
+
+        if self.forecast_hour_range is not None:
+            range_start, range_end = self.forecast_hour_range
+            forecast_df_working["hour"] = pd.to_datetime(
+                forecast_df_working["datetime"]
+            ).dt.hour
+            forecast_df_working = forecast_df_working[
+                (forecast_df_working["hour"] >= range_start)
+                & (forecast_df_working["hour"] < range_end)
+            ].copy()
+            forecast_df_working = forecast_df_working.drop(columns=["hour"])
 
         results = []
         stats = {
@@ -380,10 +721,11 @@ class Optimizer:
         }
 
         # Group forecast by day for daily-level processing
-        forecast_df = forecast_df.copy()
-        forecast_df["Date"] = pd.to_datetime(forecast_df["datetime"]).dt.date
+        forecast_df_working["Date"] = pd.to_datetime(
+            forecast_df_working["datetime"]
+        ).dt.date
 
-        forecast_days = forecast_df.groupby("Date")
+        forecast_days = forecast_df_working.groupby("Date")
 
         # Process each forecast day
         for forecast_date, forecast_day_data in forecast_days:
@@ -392,25 +734,39 @@ class Optimizer:
                 historical_df, forecast_day_data, zone, n_top=20
             )
 
-            # Select the best complete day from similar days and get its patterns
-            best_day, day_patterns = self._select_best_complete_day(
-                historical_df, zone, top_days, forecast_day_data, master_data
-            )
+            # Select patterns based on mode
+            if self.hour_block_size is None:
+                # Whole day mode: Select best complete day
+                best_day, day_patterns = self._select_best_complete_day(
+                    historical_df, zone, top_days, forecast_day_data, master_data
+                )
 
-            # Create a lookup dictionary from DataFrame for quick access by hour
-            # day_patterns already has "hour" column and one row per hour
-            patterns_by_hour = {}
-            if not day_patterns.empty and "hour" in day_patterns.columns:
-                for _, row in day_patterns.iterrows():
-                    patterns_by_hour[row["hour"]] = row
+                # Create a lookup dictionary from DataFrame for quick access by hour
+                patterns_by_hour = {}
+                if not day_patterns.empty and "hour" in day_patterns.columns:
+                    for _, row in day_patterns.iterrows():
+                        patterns_by_hour[row["hour"]] = row
+            else:
+                # Hour block mode: Select best N-hour blocks
+                patterns_by_hour = self._select_best_hour_blocks(
+                    historical_df, zone, top_days, forecast_day_data, master_data
+                )
 
-            # Process each hour in the forecast day using patterns from the selected complete day
+            # Process each hour in the forecast day
             for _, forecast_row in forecast_day_data.iterrows():
                 forecast_datetime = pd.to_datetime(forecast_row["datetime"])
                 hour = forecast_datetime.hour
                 stats["total_hours"] += 1
 
-                # Get pattern for this hour from the selected complete day
+                # Check if hour is within operating hours
+                if self.use_operating_hours and not (start_hour <= hour < end_hour):
+                    stats["outside_op_hours"] += 1
+                    detailed_failures["outside_op"].append(
+                        f"{forecast_datetime.strftime('%m/%d %H:00')}"
+                    )
+                    continue
+
+                # Get pattern for this hour
                 if hour not in patterns_by_hour:
                     stats["no_similar_patterns"] += 1
                     detailed_failures["no_patterns"].append(
@@ -418,12 +774,12 @@ class Optimizer:
                     )
                     continue
 
-                # Use the pattern directly from the selected day (already one per hour)
+                # Use the pattern
                 best_pattern = patterns_by_hour[hour]
 
                 stats["success"] += 1
 
-                # Extract recommended settings from the selected day's pattern
+                # Extract recommended settings from the pattern
                 units_count = best_pattern["A/C ON/OFF"]
                 result = {
                     "datetime": forecast_datetime,
@@ -445,6 +801,38 @@ class Optimizer:
                     "hist_indoor_temp": best_pattern["Indoor Temp."],
                 }
 
+                results.append(result)
+
+        # If forecast_hour_range is specified, add empty results for hours outside range
+        if self.forecast_hour_range is not None:
+            range_start, range_end = self.forecast_hour_range
+            forecast_df_original["hour"] = pd.to_datetime(
+                forecast_df_original["datetime"]
+            ).dt.hour
+            outside_range_df = forecast_df_original[
+                (forecast_df_original["hour"] < range_start)
+                | (forecast_df_original["hour"] >= range_end)
+            ].copy()
+
+            for _, forecast_row in outside_range_df.iterrows():
+                forecast_datetime = pd.to_datetime(forecast_row["datetime"])
+                result = {
+                    "datetime": forecast_datetime,
+                    "zone": zone,
+                    "set_temp": None,
+                    "mode": None,
+                    "fan_speed": None,
+                    "numb_units_on": None,
+                    "ac_on_off": None,
+                    "power": None,
+                    "indoor_temp": None,
+                    "hist_datetime_used": None,
+                    "forecast_outdoor_temp": forecast_row["Outdoor Temp."],
+                    "forecast_solar_radiation": forecast_row["Solar Radiation"],
+                    "hist_outdoor_temp": None,
+                    "hist_solar_radiation": None,
+                    "hist_indoor_temp": None,
+                }
                 results.append(result)
 
         result_df = pd.DataFrame(results)
@@ -479,13 +867,16 @@ class Optimizer:
         """
         Optimize all zones for the forecast period.
 
+        Uses the configured optimization mode (whole day or hour block) and
+        applies forecast hour range filtering if specified.
+
         Args:
             forecast_df: Forecast weather DataFrame
             features_csv_path: Path to features CSV file
             master_data: Master data dictionary
 
         Returns:
-            Combined DataFrame with optimization results for all zones
+            Combined DataFrame with optimization results for all zones in wide format
         """
         # Load historical patterns
         historical_df = self.load_historical_patterns(features_csv_path)
