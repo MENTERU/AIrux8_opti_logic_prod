@@ -258,6 +258,28 @@ class OptimizerRunner:
                 "error": f"Optimization failed: {str(e)}",
             }
 
+    def _remove_hist_columns(self, dataframe: pd.DataFrame) -> pd.DataFrame:
+        """
+        Remove columns that contain '_hist_' in their name.
+        Used for Google Drive upload to exclude historical columns.
+
+        Args:
+            dataframe: DataFrame to filter
+
+        Returns:
+            DataFrame with '_hist_' columns removed
+        """
+        columns_to_keep = [
+            column for column in dataframe.columns if "_hist_" not in column
+        ]
+        filtered_dataframe = dataframe[columns_to_keep].copy()
+        removed_count = len(dataframe.columns) - len(filtered_dataframe.columns)
+        if removed_count > 0:
+            print(
+                f"[OptimizerRunner] Removed {removed_count} column(s) containing '_hist_' for Google Drive upload"
+            )
+        return filtered_dataframe
+
     def _upload_to_google_drive(self, dataframe: pd.DataFrame, filename: str):
         """
         Upload optimization results DataFrame to Google Drive.
@@ -307,6 +329,9 @@ class OptimizerRunner:
         folder_id = GCPEnv.CLEA_OUT_GDRIVE_FOLDER_ID
         encoding = GCPEnv.CSV_ENCODING
 
+        # Remove _hist_ columns for Google Drive upload (original CSV remains unchanged)
+        filtered_dataframe = self._remove_hist_columns(dataframe)
+
         # Upload to Google Drive
         print(
             f"[OptimizerRunner] Uploading {filename} to Google Drive folder: {folder_id}"
@@ -316,7 +341,9 @@ class OptimizerRunner:
             folder_id=folder_id,
             encoding=encoding,
         )
-        file_id = drive_client.upload_file(dataframe, filename, encoding=encoding)
+        file_id = drive_client.upload_file(
+            filtered_dataframe, filename, encoding=encoding
+        )
         print(
             f"[OptimizerRunner] Successfully uploaded to Google Drive. File ID: {file_id}"
         )
@@ -352,9 +379,7 @@ class OptimizerRunner:
             # Convert dates to YYYYMMDD format
             start_date_formatted = start_date.replace("-", "")
             end_date_formatted = end_date.replace("-", "")
-            filename = (
-                f"optimized_results_{start_date_formatted}_{end_date_formatted}.csv"
-            )
+            filename = f"schedule_{start_date_formatted}_{end_date_formatted}.csv"
 
         output_logical_path = f"04_PlanningData/{self.store_name}/{filename}"
 
