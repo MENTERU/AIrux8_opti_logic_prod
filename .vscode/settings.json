@@ -1,0 +1,4 @@
+{
+  // ノートブックの実行ディレクトリをワークスペースのルートに固定
+  "jupyter.notebookFileRoot": "${workspaceFolder}"
+}
