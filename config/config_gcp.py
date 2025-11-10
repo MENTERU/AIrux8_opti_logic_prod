@@ -35,10 +35,11 @@ class GCPEnv:
         or "05_WeatherData/01_HistoricalData/"
     )
     SERVICE_ACCOUNT_JSON = (
-        os.environ.get("SERVICE_ACCOUNT_JSON") or "config/gdrive_service_account.json"
+        os.environ.get("SERVICE_ACCOUNT_JSON") or "config/svc-airux8-optimize-key.json"
     )
 
-    GDRIVE_FOLDER_ID = (
-        os.environ.get("GDRIVE_FOLDER_ID") or "PLACEHOLDER_FOR_GDRIVE_FOLDER_ID"
+    CLEA_OUT_GDRIVE_FOLDER_ID = (
+        os.environ.get("CLEA_OUT_GDRIVE_FOLDER_ID")
+        or "1VA9m_cIR5m9j7yfx2t-gnr1vowANRf7O"
     )
     CSV_ENCODING = os.environ.get("CSV_ENCODING") or "utf-8"

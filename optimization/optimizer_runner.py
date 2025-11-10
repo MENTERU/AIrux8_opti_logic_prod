@@ -8,9 +8,11 @@ from typing import Any, Dict
 
 import pandas as pd
 
+from config.config_gcp import GCPEnv
 from config.utils import get_data_path, get_weather_forecast_path
 from processing.utilities.master_data_loader import master_data_loader_runner
 from processing.utilities.weatherapi_client import VisualCrossingWeatherAPIDataFetcher
+from service.gdrive import GoogleDriveClient
 from service.storage import get_storage_client
 
 from .optimizer import Optimizer
@@ -256,6 +258,96 @@ class OptimizerRunner:
                 "error": f"Optimization failed: {str(e)}",
             }
 
+    def _remove_hist_columns(self, dataframe: pd.DataFrame) -> pd.DataFrame:
+        """
+        Remove columns that contain '_hist_' in their name.
+        Used for Google Drive upload to exclude historical columns.
+
+        Args:
+            dataframe: DataFrame to filter
+
+        Returns:
+            DataFrame with '_hist_' columns removed
+        """
+        columns_to_keep = [
+            column for column in dataframe.columns if "_hist_" not in column
+        ]
+        filtered_dataframe = dataframe[columns_to_keep].copy()
+        removed_count = len(dataframe.columns) - len(filtered_dataframe.columns)
+        if removed_count > 0:
+            print(
+                f"[OptimizerRunner] Removed {removed_count} column(s) containing '_hist_' for Google Drive upload"
+            )
+        return filtered_dataframe
+
+    def _upload_to_google_drive(self, dataframe: pd.DataFrame, filename: str):
+        """
+        Upload optimization results DataFrame to Google Drive.
+
+        Args:
+            dataframe: DataFrame to upload
+            filename: Filename for the uploaded file
+        """
+        # Resolve service account JSON: Secret Manager when STORAGE_BACKEND=gcs, else local file
+        service_account_json = None
+        backend = os.getenv("STORAGE_BACKEND", "local").lower()
+
+        if backend == "gcs":
+            try:
+                from service.secretmanager import SecretManagerClient
+
+                sm = SecretManagerClient()
+                service_account_json = sm.get_secret_as_str("SERVICE_ACCOUNT_JSON")
+                if not service_account_json:
+                    raise ValueError(
+                        "SERVICE_ACCOUNT_JSON secret not found in Secret Manager"
+                    )
+            except Exception as e:
+                raise ValueError(
+                    f"Failed to load Google Drive service account from Secret Manager: {e}. "
+                    "Ensure SERVICE_ACCOUNT_JSON secret exists in Secret Manager."
+                )
+
+        # Fallback to local file only for local backend
+        if not service_account_json and backend != "gcs":
+            service_account_path = GCPEnv.SERVICE_ACCOUNT_JSON
+            # Handle both relative and absolute paths
+            if not os.path.isabs(service_account_path):
+                # Get project root (parent of optimization directory)
+                current_file_dir = os.path.dirname(os.path.abspath(__file__))
+                project_root = os.path.dirname(current_file_dir)
+                service_account_path = os.path.join(project_root, service_account_path)
+            try:
+                with open(service_account_path, "r") as f:
+                    service_account_json = f.read()
+            except Exception as e:
+                raise ValueError(
+                    f"Failed to load service account JSON from {service_account_path}: {e}"
+                )
+
+        # Get folder ID and encoding from config
+        folder_id = GCPEnv.CLEA_OUT_GDRIVE_FOLDER_ID
+        encoding = GCPEnv.CSV_ENCODING
+
+        # Remove _hist_ columns for Google Drive upload (original CSV remains unchanged)
+        filtered_dataframe = self._remove_hist_columns(dataframe)
+
+        # Upload to Google Drive
+        print(
+            f"[OptimizerRunner] Uploading {filename} to Google Drive folder: {folder_id}"
+        )
+        drive_client = GoogleDriveClient(
+            service_account_json=service_account_json,
+            folder_id=folder_id,
+            encoding=encoding,
+        )
+        file_id = drive_client.upload_file(
+            filtered_dataframe, filename, encoding=encoding
+        )
+        print(
+            f"[OptimizerRunner] Successfully uploaded to Google Drive. File ID: {file_id}"
+        )
+
     def save_results_to_csv(
         self, start_date: str = None, end_date: str = None, filename: str = None
     ) -> str:
@@ -287,9 +379,7 @@ class OptimizerRunner:
             # Convert dates to YYYYMMDD format
             start_date_formatted = start_date.replace("-", "")
             end_date_formatted = end_date.replace("-", "")
-            filename = (
-                f"optimized_results_{start_date_formatted}_{end_date_formatted}.csv"
-            )
+            filename = f"schedule_{start_date_formatted}_{end_date_formatted}.csv"
 
         output_logical_path = f"04_PlanningData/{self.store_name}/{filename}"
 
@@ -306,4 +396,14 @@ class OptimizerRunner:
             raise
 
         print(f"[OptimizerRunner] Optimization results saved to: {output_logical_path}")
+
+        # Also upload to Google Drive
+        try:
+            self._upload_to_google_drive(self.results["optimization_result"], filename)
+        except Exception as error:
+            print(
+                f"[OptimizerRunner] Warning: Failed to upload to Google Drive: {error}"
+            )
+            # Don't raise - we still want to return the storage path even if GDrive fails
+
         return output_logical_path
