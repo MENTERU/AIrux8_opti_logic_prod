@@ -35,7 +35,11 @@ class GCPEnv:
         or "05_WeatherData/01_HistoricalData/"
     )
     SERVICE_ACCOUNT_JSON = (
-        os.environ.get("SERVICE_ACCOUNT_JSON") or "config/svc-airux8-optimize-key.json"
+        os.environ.get("SVC_AIRUX8_OPTIMIZE_SA")
+        or "config/svc-airux8-optimize-key.json"
+    )
+    SERVICE_ACCOUNT_SECRET_NAME = (
+        os.environ.get("SERVICE_ACCOUNT_SECRET_NAME") or "SVC_AIRUX8_OPTIMIZE_SA"
     )
 
     CLEA_OUT_GDRIVE_FOLDER_ID = (
