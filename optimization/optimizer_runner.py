@@ -297,15 +297,17 @@ class OptimizerRunner:
                 from service.secretmanager import SecretManagerClient
 
                 sm = SecretManagerClient()
-                service_account_json = sm.get_secret_as_str("SERVICE_ACCOUNT_JSON")
+                secret_name = GCPEnv.SERVICE_ACCOUNT_SECRET_NAME
+                service_account_json = sm.get_secret_as_str(secret_name)
                 if not service_account_json:
                     raise ValueError(
-                        "SERVICE_ACCOUNT_JSON secret not found in Secret Manager"
+                        f"{secret_name} secret not found in Secret Manager"
                     )
             except Exception as e:
+                secret_name = GCPEnv.SERVICE_ACCOUNT_SECRET_NAME
                 raise ValueError(
                     f"Failed to load Google Drive service account from Secret Manager: {e}. "
-                    "Ensure SERVICE_ACCOUNT_JSON secret exists in Secret Manager."
+                    f"Ensure {secret_name} secret exists in Secret Manager."
                 )
 
         # Fallback to local file only for local backend
