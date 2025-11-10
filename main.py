@@ -199,12 +199,12 @@ def run_optimization_for_store(
                 start_date = datetime.now(pytz.timezone("Asia/Tokyo")).strftime(
                     "%Y-%m-%d"
                 )
-                # start_date = "2025-09-29"　# for sepcified date
+                # start_date = "2025-11-05"　# for sepcified date
             if end_date is None:
                 end_date = (
                     datetime.now(pytz.timezone("Asia/Tokyo")) + timedelta(days=3)
                 ).strftime("%Y-%m-%d")
-                # end_date = "2025-10-04" # for sepcified date
+                # end_date = "2025-11-08" # for sepcified date
             logging.info(f"Optimizing for period: {start_date} to {end_date}")
             logging.info(f"Strategy: {strategy}")
 

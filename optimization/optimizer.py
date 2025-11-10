@@ -41,7 +41,7 @@ class Optimizer:
         self,
         use_operating_hours: bool = False,
         hour_block_size: Optional[int] = 3,
-        forecast_hour_range: Optional[Tuple[int, int]] = (8, 19),
+        forecast_hour_range: Optional[Tuple[int, int]] = None,
     ):
         """
         Initialize the Optimizer with configuration.
@@ -402,9 +402,14 @@ class Optimizer:
         """
         Calculate distance between forecast hour block and historical hour block.
 
+        IMPORTANT: This function expects that forecast_block and historical_block
+        contain data for the same hours (e.g., if forecast is for hours [8, 9, 10],
+        historical_block should also be for hours [8, 9, 10]). This ensures proper
+        hour-to-hour comparison rather than arbitrary time matching.
+
         Args:
-            forecast_block: DataFrame with forecast weather for N hours
-            historical_block: DataFrame with historical weather for N hours
+            forecast_block: DataFrame with forecast weather for specific hours
+            historical_block: DataFrame with historical weather for the same hours
 
         Returns:
             Weather distance (lower is better, represents how similar the blocks are)
@@ -455,6 +460,11 @@ class Optimizer:
 
         For each forecast hour block (consecutive N hours), finds the best matching
         N-hour block from all candidate historical days where AC is ON.
+
+        CRITICAL: Historical blocks must have the exact same hours as forecast blocks.
+        For example, if forecast is for hours [8, 9, 10], the historical block must
+        also be for hours [8, 9, 10] (not [14, 15, 16] or any other hours).
+        This ensures proper hour-to-hour matching (8 AM forecast → 8 AM historical).
 
         Args:
             historical_df: Historical data DataFrame (already filtered for AC ON)
@@ -557,53 +567,43 @@ class Optimizer:
                 if len(day_data) == 0:
                     continue
 
-                # Find all possible consecutive blocks in this day
-                # that match the forecast hour block size
+                # CRITICAL: Only consider historical blocks where hours exactly match forecast hours
+                # For example, if forecast is [8, 9, 10], historical block must also be [8, 9, 10]
                 day_hours = sorted(day_data["hour"].unique())
 
-                # Need at least actual_block_size hours to form a block
-                if len(day_hours) < actual_block_size:
+                # Check if all forecast hours exist in this day's historical data
+                if not all(hour in day_hours for hour in hour_block):
                     continue
 
-                # Try all possible consecutive blocks of actual_block_size in this day
-                for start_idx in range(len(day_hours) - actual_block_size + 1):
-                    candidate_hours = day_hours[
-                        start_idx : start_idx + actual_block_size
-                    ]
+                # Extract historical block with exact same hours as forecast block
+                candidate_block = day_data[day_data["hour"].isin(hour_block)].copy()
 
-                    # Fix 1: Validate that candidate hours are actually consecutive
-                    expected_consecutive = list(
-                        range(
-                            candidate_hours[0], candidate_hours[0] + actual_block_size
-                        )
-                    )
-                    if candidate_hours != expected_consecutive:
-                        # Skip non-consecutive blocks
-                        continue
+                if len(candidate_block) == 0:
+                    continue
 
-                    candidate_block = day_data[
-                        day_data["hour"].isin(candidate_hours)
-                    ].copy()
+                # Verify we have data for all required hours
+                candidate_hours = sorted(candidate_block["hour"].unique())
+                if set(candidate_hours) != set(hour_block):
+                    # Missing some hours, skip this candidate
+                    continue
 
-                    if len(candidate_block) == 0:
-                        continue
+                # Calculate weather distance for this candidate block
+                # Note: forecast_block and candidate_block now have matching hours
+                weather_distance = self._calculate_hour_block_distance(
+                    forecast_block, candidate_block
+                )
 
-                    # Calculate weather distance for this candidate block
-                    weather_distance = self._calculate_hour_block_distance(
-                        forecast_block, candidate_block
-                    )
+                # Calculate average power for this block
+                avg_power = candidate_block["adjusted_power"].mean()
 
-                    # Calculate average power for this block
-                    avg_power = candidate_block["adjusted_power"].mean()
-
-                    best_block_candidates.append(
-                        {
-                            "weather_distance": weather_distance,
-                            "avg_power": avg_power,
-                            "block_data": candidate_block,
-                            "hours": candidate_hours,
-                        }
-                    )
+                best_block_candidates.append(
+                    {
+                        "weather_distance": weather_distance,
+                        "avg_power": avg_power,
+                        "block_data": candidate_block,
+                        "hours": candidate_hours,
+                    }
+                )
 
             # Select best block (lowest weather distance, then lowest power)
             if len(best_block_candidates) > 0:
@@ -619,31 +619,23 @@ class Optimizer:
                     f"from {len(best_block_candidates)} candidates"
                 )
 
-                # Map each hour in forecast block to corresponding hour in historical block
-                # Use positional mapping: forecast block position i maps to historical block position i
+                # Direct hour matching: forecast hour maps to same historical hour
+                # Since we ensured hours match exactly, we can map directly
                 historical_block_data = best_candidate["block_data"]
-                historical_hours_sorted = sorted(historical_block_data["hour"].unique())
-                forecast_hours_sorted = sorted(hour_block)
 
                 print(
-                    f"  → Mapping forecast hours {forecast_hours_sorted} → historical hours {historical_hours_sorted} (positional)"
+                    f"  → Direct hour matching: forecast hours {sorted(hour_block)} → historical hours {sorted(best_candidate['hours'])} (exact match)"
                 )
 
-                # Map by position: forecast hour at position i → historical hour at position i
-                for idx, forecast_hour in enumerate(forecast_hours_sorted):
-                    if idx < len(historical_hours_sorted):
-                        hist_hour = historical_hours_sorted[idx]
-                    else:
-                        # Fallback: use last historical hour if forecast block is larger
-                        hist_hour = historical_hours_sorted[-1]
-
-                    # Get the row(s) for this historical hour
+                # Map each forecast hour to its corresponding historical hour (same hour value)
+                for forecast_hour in hour_block:
+                    # Get the row(s) for this historical hour (same hour as forecast)
                     hist_rows = historical_block_data[
-                        historical_block_data["hour"] == hist_hour
+                        historical_block_data["hour"] == forecast_hour
                     ]
 
                     if len(hist_rows) == 0:
-                        # Should not happen, but defensive check
+                        # Should not happen since we verified all hours exist, but defensive check
                         continue
 
                     # If multiple rows for same hour, select lowest power
