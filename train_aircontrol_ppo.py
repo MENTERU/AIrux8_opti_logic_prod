@@ -411,11 +411,11 @@ def main():
         torch.save(policy_obj.state_dict(), uniq)
         print(f"[save_best] (archived) -> {uniq}")
         try:
-            save_env_files_from_vec(train_envs, env_snapshots_root, tag="train_best")
+            save_env_files_from_vec(train_envs, log_root, tag=f"train_best_{ts}")
         except Exception as e:
             print(f"[save_best] train env snapshot failed: {e}")
         try:
-            save_env_files_from_vec(test_envs, env_snapshots_root, tag="test_best")
+            save_env_files_from_vec(test_envs, log_root, tag=f"test_best_{ts}")
         except Exception as e:
             print(f"[save_best] test env snapshot failed: {e}")
 
