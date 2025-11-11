@@ -304,7 +304,7 @@ def main():
     print("obs_space   :", single_env.observation_space)
 
     # ====== 学習設定 ======
-    max_epoch = 25
+    max_epoch = 10
     step_per_epoch = 480  # 1 epoch で集める環境ステップ
     step_per_collect = 240  # 1 collect あたりのサンプル数
     repeat_per_collect = 3  # 収集データでの反復学習回数
