@@ -222,6 +222,25 @@ class MultiDeviceQuadHeadDiscreteActor(nn.Module):
             raise ValueError("temp_idx must be scalar, [n_devices], or [B, n_devices].")
         return t
 
+    def _mask_temp_logits_window(
+        self,
+        logits_T: torch.Tensor,  # [B, n_devices, n_temp]
+        temp_idx_BD: torch.Tensor,  # [B, n_devices]
+        K: int,  # 半径（±K を許可）
+    ) -> torch.Tensor:
+        B, D, Ktemp = logits_T.shape
+        # 許可位置のブールマスクを作る
+        allow = torch.zeros((B, D, Ktemp), device=logits_T.device, dtype=torch.bool)
+        base = torch.clamp(temp_idx_BD, 0, Ktemp - 1)  # 中心
+        for delta in range(-K, K + 1):
+            idx = torch.clamp(base + delta, 0, Ktemp - 1).unsqueeze(-1)  # [B,D,1]
+            oh = torch.zeros_like(allow)
+            oh.scatter_(-1, idx, True)
+            allow |= oh
+        # 許可外を -inf へ
+        masked = torch.where(allow, logits_T, torch.full_like(logits_T, -1e30))
+        return masked
+
     def _mask_temp_logits_pm1(self, logits_T: torch.Tensor, temp_idx_BD: torch.Tensor):
         """
         logits_T: [B, n_devices, n_temp]
@@ -304,28 +323,13 @@ class MultiDeviceQuadHeadDiscreteActor(nn.Module):
 
         cur_idx = self._normalize_temp_idx(cur_idx, B, t.device)
         if cur_idx is not None:
-            # -1 は「無効（マスクしない）」として扱う
-            valid_mask = (cur_idx >= 0) & (cur_idx < self.n_temp)
+            # 有効(0..n_temp-1)だけをマスク、無効(-1 等)は素通し
+            valid_mask = (cur_idx >= 0) & (cur_idx < self.n_temp)  # [B, D]
             if valid_mask.any():
-                # デフォルトは -inf（= 実質選べない）
-                pen = torch.full_like(t, -1e30)
-                # 3候補: cur-1, cur, cur+1（境界はclamp）
-                c = torch.clamp(cur_idx, 0, self.n_temp - 1)
-                c0 = torch.clamp(c - 1, 0, self.n_temp - 1)
-                c2 = torch.clamp(c + 1, 0, self.n_temp - 1)
-                # [B, n_devices, 1] へ
-                c0 = c0.unsqueeze(-1)
-                c1 = c.unsqueeze(-1)
-                c2 = c2.unsqueeze(-1)
-                # 許可位置だけ 0（ペナルティ無し）にする
-                pen.scatter_(dim=2, index=c0, value=0.0)
-                pen.scatter_(dim=2, index=c1, value=0.0)
-                pen.scatter_(dim=2, index=c2, value=0.0)
-                # 無効(-1)の場所はペナルティを付けないようにマスク
-                inv = (~valid_mask).unsqueeze(-1)  # [B, n_devices, 1]
-                pen = torch.where(inv, torch.zeros_like(pen), pen)
-                # 温度ロジットへ加算（= 不許可は実質確率0）
-                t = t + pen
+                c = torch.clamp(cur_idx, 0, self.n_temp - 1)  # [B, D]
+                t_masked = self._mask_temp_logits_window(t, c, K=2)  # ±2 を許可
+                vm = valid_mask.unsqueeze(-1)  # [B, D, 1]
+                t = torch.where(vm, t_masked, t)
 
         # 以降は従来どおり連結
         logits_chunks = []
