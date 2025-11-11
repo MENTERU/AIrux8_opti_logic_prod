@@ -15,6 +15,7 @@ from tianshou.data import Batch as TBatch
 from tianshou.data import Collector, VectorReplayBuffer
 from tianshou.env import SubprocVectorEnv
 from tianshou.trainer import OnpolicyTrainer
+from tianshou.utils import TensorboardLogger
 from torch.utils.tensorboard import SummaryWriter
 
 from deep_reinforcement_learning.agent.ppo_agent import create_ppo_for_hvac
@@ -272,10 +273,6 @@ def main():
         buffer=VectorReplayBuffer(80000, train_envs.env_num),
     )
     test_collector = Collector(policy=policy, env=test_envs)
-
-    # ====== TensorBoard ======
-    from tianshou.utils import TensorboardLogger
-
     log_root = f"./logs/aircontrol_ppo/{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     os.makedirs(log_root, exist_ok=True)
     tb_run_dir = os.path.join(log_root, "runs", "ppo")
@@ -318,8 +315,15 @@ def main():
     best_path = os.path.join(log_root, "policy_best.pth")
 
     def save_best_fn(policy_obj):
+        # 既存の「常に固定名」も保存（運用で一番使いやすい）
         torch.save(policy_obj.state_dict(), best_path)
         print(f"[save_best] -> {best_path}")
+
+        # 併せて履歴用のユニーク名でも保存（例：時刻とUNIX秒）
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        uniq = os.path.join(log_root, f"policy_best_{ts}_{int(time.time())}.pth")
+        torch.save(policy_obj.state_dict(), uniq)
+        print(f"[save_best] (archived) -> {uniq}")
 
     # ====== トレーナ起動 ======
     result = OnpolicyTrainer(
