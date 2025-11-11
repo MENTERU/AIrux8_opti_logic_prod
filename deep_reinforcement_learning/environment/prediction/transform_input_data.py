@@ -218,6 +218,30 @@ _INDOOR_OUT = "indoor_temp__"
 _KWH_OUT = "total_kwh__"
 
 
+def _normalize_raw_metric_name(name: str) -> str:
+    s = str(name)
+    m = re.match(r"^\s*Indoor\s*Temp\.?\s*__(.*)$", s, flags=re.IGNORECASE)
+    if m:
+        return f"indoor_temp__{m.group(1)}"
+    m = re.match(r"^\s*Total\s*Kwh\.?\s*__(.*)$", s, flags=re.IGNORECASE)
+    if m:
+        return f"total_kwh__{m.group(1)}"
+    # 既に正規化済み or 他の列は触らない
+    return s
+
+
+def _normalize_raw_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None:
+        return None
+    new_cols = [_normalize_raw_metric_name(c) for c in df.columns]
+    # 衝突チェック（念のため）
+    if len(set(new_cols)) != len(new_cols):
+        raise ValueError("正規化後の列名が衝突しています。命名を見直してください。")
+    out = df.copy()
+    out.columns = new_cols
+    return out
+
+
 def _normalize_metric_names(cols: List[str]) -> List[str]:
     out = []
     for c in cols:
@@ -325,7 +349,7 @@ class _SameTimeDP:
         use_freq_shift: bool,
         lag_prefix_fmt: str,
     ):
-        self.cols = list(cols)  # "Indoor Temp.__X" / "total_kwh__Y"
+        self.cols = list(cols)  # "indoor_temp.__X" / "total_kwh__Y"
         self.col_index: Dict[str, int] = {c: i for i, c in enumerate(self.cols)}
         self.n = len(self.cols)
         self.days = int(days)
@@ -475,10 +499,11 @@ class _SameTimeDP:
     ) -> pd.DataFrame:
         df = _ensure_dtindex(df)
         if allow_growth:
+            # ★ 受け入れ条件も正規化済みプレフィクスに変更
             incoming = [
                 c
                 for c in list(df.columns)
-                if c in self.cols or c.startswith(_INDOOR_RAW) or c.startswith(_KWH_OUT)
+                if c in self.cols or c.startswith(_INDOOR_OUT) or c.startswith(_KWH_OUT)
             ]
             self.grow_columns([c for c in incoming if c not in self.col_index])
 
@@ -530,12 +555,14 @@ class ResidualFeatureDP:
         self.dp: Optional[_SameTimeDP] = None
 
     def _collect_cols(self, df: pd.DataFrame) -> List[str]:
-        indoor = pick_cols(df, _INDOOR_RAW)
+        # ★ 入力は正規化済み前提に切り替え
+        indoor = pick_cols(df, _INDOOR_OUT)
         kwh = pick_cols(df, _KWH_OUT)
         return indoor + kwh
 
     def fit(self, base_df: pd.DataFrame) -> pd.DataFrame:
-        base_df = _ensure_dtindex(base_df)
+        # ★ 入力を正規化
+        base_df = _ensure_dtindex(_normalize_raw_columns(base_df))
         cols = self._collect_cols(base_df)
         self.dp = _SameTimeDP(
             cols=cols,
@@ -546,7 +573,9 @@ class ResidualFeatureDP:
             lag_prefix_fmt=self.lag_prefix_fmt,
         )
         raw = self.dp.fit_transform(base_df[cols])
-        raw.columns = _normalize_metric_names(list(raw.columns))
+        raw.columns = _normalize_metric_names(
+            list(raw.columns)
+        )  # 出力側の整形は従来通り
         raw = raw[_order_columns_like_builder(list(raw.columns), lags_hours=self.lags)]
         return raw
 
@@ -555,7 +584,7 @@ class ResidualFeatureDP:
     ) -> pd.DataFrame:
         if self.dp is None:
             raise RuntimeError("fit() を先に呼んでください。")
-        new_df = _ensure_dtindex(new_df)
+        new_df = _ensure_dtindex(_normalize_raw_columns(new_df))  # ★ 入力を正規化
         cols = self._collect_cols(new_df)
         out = self.dp.transform_new(new_df[cols], allow_growth=allow_growth)
         out.columns = _normalize_metric_names(list(out.columns))
@@ -597,31 +626,58 @@ class InputDataBuilderDP:
         self._lags = list(lags_hours)
 
     def fit(self, base_df: pd.DataFrame) -> pd.DataFrame:
-        """
-        base_df: DatetimeIndex, 少なくとも "Indoor Temp.__*", "total_kwh__*" を含む
-        戻り値: DPの fit_transform 結果（参考用）
-        """
-        return self.res_dp.fit(base_df)
+        out = self.res_dp.fit(_normalize_raw_columns(base_df))
+        self._online_started = False
+        self._history_index_last = None
+        return out
 
-    def make_input_data(
+    # ====== ★ オンライン運用API ======
+
+    def begin_online(self, initial_df: pd.DataFrame | None = None) -> None:
+        """
+        オンライン運用を開始。内部履歴ポインタをセット。
+        initial_df を渡せば、その末尾を「直近実績」として扱う。
+        渡さない場合は、fit 済み DP の内部状態に依存。
+        """
+        self._online_started = True
+        if initial_df is not None:
+            ini = _ensure_dtindex(initial_df)
+            if len(ini) == 0:
+                self._history_index_last = None
+            else:
+                self._history_index_last = ini.index[-1]
+        else:
+            self._history_index_last = None  # DP内部の最後時刻に委ねる
+
+    def reset_online(self) -> None:
+        """オンライン履歴ポインタだけクリア（DP自体のfit状態は維持）。"""
+        self._online_started = False
+        self._history_index_last = None
+
+    def make_input_next(
         self,
-        time_info: pd.DataFrame,
+        index: pd.DatetimeIndex | list[pd.Timestamp] | pd.Timestamp,
         weather_info: Optional[pd.DataFrame] = None,
         control_values: Optional[pd.DataFrame] = None,
         *,
-        return_baseline: bool = False,  # ★ 追加
+        return_baseline: bool = False,
     ) -> pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        次時刻（複数でも可）の特徴量を作る。DPの内部状態は更新しない（予測用）。
+        """
         if self.res_dp.dp is None:
-            raise RuntimeError("まず fit(base_df) を呼び、DP状態を初期化してください。")
+            raise RuntimeError("fit(base_df) の後に呼んでください。")
 
-        ti = _ensure_dtindex(time_info.copy())
-        index = ti.index
+        if isinstance(index, pd.Timestamp):
+            ti = pd.DatetimeIndex([index])
+        else:
+            ti = pd.DatetimeIndex(index)
 
         # 1) 時間特徴
-        tf = make_time_features(index)
+        tf = make_time_features(ti)
 
-        # 2) DP法の BL/ラグ群（室温 + kWh）
-        empty_obs = pd.DataFrame(index=index)
+        # 2) DP法の BL/ラグ群（状態は更新しない）
+        empty_obs = pd.DataFrame(index=ti)
         res_feats = self.res_dp.dp.transform_new(
             empty_obs, allow_growth=False, mutate=False
         )
@@ -630,34 +686,54 @@ class InputDataBuilderDP:
             _order_columns_like_builder(list(res_feats.columns), lags_hours=self._lags)
         ]
 
-        # --- ★ ベースラインDFを作る（bl__ を剥がして素名に） ---
+        # ベースライン（任意返却）
         bl_cols = [c for c in res_feats.columns if c.startswith("bl__")]
-        Y_baseline = res_feats[bl_cols].copy()
-        Y_baseline.columns = [
-            c.replace("bl__", "") for c in Y_baseline.columns
-        ]  # indoor_temp__/total_kwh__ で揃う
+        Y_baseline = res_feats[bl_cols].rename(columns=lambda c: c.replace("bl__", ""))
 
-        # 3) 連結（時間 → DP列 → 天気 → 操作量）
+        # 3) 連結
         parts: list[pd.DataFrame] = [tf, res_feats]
         if self.include_weather_raw and (weather_info is not None):
-            parts.append(_ensure_dtindex(weather_info).reindex(index))
+            parts.append(_ensure_dtindex(weather_info).reindex(ti))
         if self.include_original_controls and (control_values is not None):
-            parts.append(_ensure_dtindex(control_values).reindex(index))
+            parts.append(_ensure_dtindex(control_values).reindex(ti))
 
         X = pd.concat(parts, axis=1)
         X = X.apply(pd.to_numeric, errors="coerce").fillna(0.0)
 
-        # 最終列順整形
+        # 列順整形
         time_cols = ["hour", "month", "weekday", "is_weekend"]
         time_cols = [c for c in time_cols if c in X.columns]
         dp_cols = [c for c in res_feats.columns if c in X.columns]
         tail_cols = [c for c in X.columns if c not in time_cols + dp_cols]
         X = X[time_cols + dp_cols + tail_cols]
 
-        # ★ 返り値を選択
-        if return_baseline:
-            return X, Y_baseline
-        return X
+        return (X, Y_baseline) if return_baseline else X
+
+    def accumulate_actuals(self, y_actual: pd.DataFrame) -> None:
+        """
+        実績データ（少なくとも室温/電力など DP が必要とする系列）を取り込み、
+        DP内部のラグ/BL状態を前進させる。ここで初めて allow_growth=True にする。
+        """
+        if self.res_dp.dp is None:
+            raise RuntimeError("fit(base_df) の後に呼んでください。")
+
+        ya = _ensure_dtindex(y_actual)
+        if len(ya) == 0:
+            return
+
+        # 単調増加チェック（必要なら厳格化）
+        if self._history_index_last is not None:
+            if ya.index[0] <= self._history_index_last:
+                raise ValueError(
+                    f"accumulate_actuals の index は {self._history_index_last} より後である必要があります。"
+                )
+
+        # DP の内部状態を前進（成長 & 破壊的に更新）
+        #   ここで empty_obs ではなく、実績を渡すのが重要。
+        #   ResidualFeatureDP 側の transform_new が新規データを内部に取り込める前提。
+        _ = self.res_dp.dp.transform_new(ya, allow_growth=True, mutate=True)
+
+        self._history_index_last = ya.index[-1]
 
 
 # ========= 目的変数（Y）を残差化 =========

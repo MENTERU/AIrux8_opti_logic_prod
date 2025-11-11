@@ -14,17 +14,6 @@ from torch.distributions import Categorical
 
 # ========= 条件付きマスク付き分布 =========
 class MultiHeadCategoricalMasked:
-    """
-    連結logits [B, sum(slice_sizes)] を受け取り、
-    デバイス毎に [temp, mode, wind, onoff] を切り出して扱う。
-    onoff==OFF のサンプル行では、mode=auto_idx, wind=low_idx を強制（確率1）にする。
-    - sample(): 上記仕様でサンプル
-    - mode:     greedyでも同様に強制
-    - log_prob: OFF時に強制値と一致しない行動は -inf（≈ -1e30）
-                一致する行はそのheadの log_prob=0 として扱う
-    - entropy:  OFF時に固定される head（mode, wind）の寄与は 0
-    """
-
     def __init__(
         self,
         logits_cat: torch.Tensor,  # [B, S]
@@ -35,8 +24,8 @@ class MultiHeadCategoricalMasked:
         n_wind: int,
         n_onoff: int,
         off_idx: int,
-        auto_idx: int,
-        low_idx: int,
+        fan_mode_idx: int,  # ← 追加: mode の 'fan' のインデックス
+        auto_wind_idx: int,  # ← 追加: wind の 'auto' のインデックス
     ):
         self.logits_cat = logits_cat
         self.slice_sizes = slice_sizes
@@ -47,20 +36,20 @@ class MultiHeadCategoricalMasked:
             n_wind,
             n_onoff,
         )
-        self.off_idx, self.auto_idx, self.low_idx = off_idx, auto_idx, low_idx
-
-        chunks = torch.split(logits_cat, slice_sizes, dim=-1)  # len = 4*n_devices
-        self.T, self.M, self.W, self.O = [], [], [], []  # noqa
+        self.off_idx = off_idx
+        self.fan_mode_idx = fan_mode_idx
+        self.auto_wind_idx = auto_wind_idx
+        chunks = torch.split(logits_cat, slice_sizes, dim=-1)
+        self.T, self.M, self.W, self.O = [], [], [], []
         for d in range(n_devices):
-            self.T.append(chunks[4 * d + 0])  # [B, n_temp]
-            self.M.append(chunks[4 * d + 1])  # [B, n_mode]
-            self.W.append(chunks[4 * d + 2])  # [B, n_wind]
-            self.O.append(chunks[4 * d + 3])  # [B, n_onoff]
-        # [B, n_devices, n_each] へ
+            self.T.append(chunks[4 * d + 0])
+            self.M.append(chunks[4 * d + 1])
+            self.W.append(chunks[4 * d + 2])
+            self.O.append(chunks[4 * d + 3])
         self.T = torch.stack(self.T, dim=1)
         self.M = torch.stack(self.M, dim=1)
         self.W = torch.stack(self.W, dim=1)
-        self.O = torch.stack(self.O, dim=1)  # noqa
+        self.O = torch.stack(self.O, dim=1)
 
     @staticmethod
     def _force_one_hot_logits(logits_2d: torch.Tensor, forced_idx: int) -> torch.Tensor:
@@ -71,36 +60,33 @@ class MultiHeadCategoricalMasked:
     def sample(self) -> torch.Tensor:
         outs = []
         for d in range(self.n_devices):
-            # on/off
             cat_on = Categorical(logits=self.O[:, d, :])
             a_on = cat_on.sample()  # [B]
             is_off = a_on == self.off_idx
 
-            # mode
-            m_logits = self.M[:, d, :]
-            m_logits_eff = m_logits.clone()
+            # mode: OFF なら 'fan' を強制
+            m_logits = self.M[:, d, :].clone()
             if is_off.any():
                 idx = torch.nonzero(is_off, as_tuple=False).squeeze(-1)
-                m_logits_eff[idx] = self._force_one_hot_logits(
-                    m_logits[idx], self.auto_idx
+                m_logits[idx] = self._force_one_hot_logits(
+                    m_logits[idx], self.fan_mode_idx
                 )
-            a_m = Categorical(logits=m_logits_eff).sample()
+            a_m = Categorical(logits=m_logits).sample()
 
-            # wind
-            w_logits = self.W[:, d, :]
-            w_logits_eff = w_logits.clone()
+            # wind: OFF なら 'auto' を強制
+            w_logits = self.W[:, d, :].clone()
             if is_off.any():
                 idx = torch.nonzero(is_off, as_tuple=False).squeeze(-1)
-                w_logits_eff[idx] = self._force_one_hot_logits(
-                    w_logits[idx], self.low_idx
+                w_logits[idx] = self._force_one_hot_logits(
+                    w_logits[idx], self.auto_wind_idx
                 )
-            a_w = Categorical(logits=w_logits_eff).sample()
+            a_w = Categorical(logits=w_logits).sample()
 
-            # temp: 自由
+            # temp は自由
             a_t = Categorical(logits=self.T[:, d, :]).sample()
 
-            outs.append(torch.stack([a_t, a_m, a_w, a_on], dim=-1))  # [B,4]
-        return torch.cat(outs, dim=-1)  # [B, 4*n_devices]
+            outs.append(torch.stack([a_t, a_m, a_w, a_on], dim=-1))
+        return torch.cat(outs, dim=-1)
 
     @property
     def mode(self) -> torch.Tensor:
@@ -112,10 +98,10 @@ class MultiHeadCategoricalMasked:
             a_mf = torch.argmax(self.M[:, d, :], dim=-1)
             a_wf = torch.argmax(self.W[:, d, :], dim=-1)
             a_m = torch.where(
-                is_off, torch.tensor(self.auto_idx, device=a_mf.device), a_mf
+                is_off, torch.tensor(self.fan_mode_idx, device=a_mf.device), a_mf
             )
             a_w = torch.where(
-                is_off, torch.tensor(self.low_idx, device=a_wf.device), a_wf
+                is_off, torch.tensor(self.auto_wind_idx, device=a_wf.device), a_wf
             )
             outs.append(torch.stack([a_t, a_m, a_w, a_on], dim=-1))
         return torch.cat(outs, dim=-1)
@@ -129,17 +115,14 @@ class MultiHeadCategoricalMasked:
             a_w = actions[:, 4 * d + 2]
             a_o = actions[:, 4 * d + 3]
 
-            # on/off
             total = total + Categorical(logits=self.O[:, d, :]).log_prob(a_o)
-
-            # temp
             total = total + Categorical(logits=self.T[:, d, :]).log_prob(a_t)
 
             is_off = a_o == self.off_idx
 
-            # mode: OFF時は強制値と一致しなければ -inf、合っていれば0
+            # mode: OFF のとき fan 以外は -inf、fan は 0
             lp_m_free = Categorical(logits=self.M[:, d, :]).log_prob(a_m)
-            ok_m = a_m == self.auto_idx
+            ok_m = a_m == self.fan_mode_idx
             lp_m = torch.where(
                 is_off,
                 torch.where(
@@ -149,9 +132,9 @@ class MultiHeadCategoricalMasked:
             )
             total = total + lp_m
 
-            # wind: 同様
+            # wind: OFF のとき auto 以外は -inf、auto は 0
             lp_w_free = Categorical(logits=self.W[:, d, :]).log_prob(a_w)
-            ok_w = a_w == self.low_idx
+            ok_w = a_w == self.auto_wind_idx
             lp_w = torch.where(
                 is_off,
                 torch.where(
@@ -163,7 +146,7 @@ class MultiHeadCategoricalMasked:
         return total
 
     def entropy(self) -> torch.Tensor:
-        # 近似: 固定されない on/off と temp だけの和（簡潔・安定）
+        # 固定されない on/off と temp のみ足し合わせる簡易形
         ent = torch.zeros(
             self.logits_cat.size(0),
             device=self.logits_cat.device,
@@ -358,17 +341,15 @@ def create_ppo_for_hvac(
     device: torch.device,
     lr: float,
     set_temp_list: Sequence,
-    set_mode_list: Sequence,
-    set_wind_list: Sequence,
-    set_on_off_list: Sequence,
+    set_mode_list: Sequence,  # 例: ["fan","cool","heat"]
+    set_wind_list: Sequence,  # 例: ["low","mid","high","top","auto"]
+    set_on_off_list: Sequence,  # ← ユーザー変数名が set_activate_list の場合はここに渡す
     n_devices: int,
     **ppo_kwargs,
 ):
     obs_shape = single_env.observation_space.shape
     act_space = single_env.action_space
-    assert isinstance(
-        act_space, gym.spaces.MultiDiscrete
-    ), "action_space は MultiDiscrete を想定"
+    assert isinstance(act_space, gym.spaces.MultiDiscrete)
 
     n_temp = len(set_temp_list)
     n_mode = len(set_mode_list)
@@ -376,16 +357,12 @@ def create_ppo_for_hvac(
     n_onoff = len(set_on_off_list)
     slice_sizes = [n_temp, n_mode, n_wind, n_onoff] * n_devices
 
-    # MultiDiscrete の nvec 期待形と合っているか（警告のみ）
     expected = np.array(slice_sizes, dtype=np.int64)
     if not (
         act_space.nvec.size == expected.size and np.all(act_space.nvec == expected)
     ):
-        print(
-            "⚠️ action_space.nvec が [temp,mode,wind,onoff]×台数 と一致していません。学習は続行可能ですが意図ズレの可能性があります。"
-        )
+        print("⚠️ action_space.nvec が [temp,mode,wind,onoff]×台数 と一致していません。")
 
-    # “OFF”“auto”“low” のインデックス
     def _find(lst, key, default=None):
         try:
             return int(list(lst).index(key))
@@ -394,11 +371,13 @@ def create_ppo_for_hvac(
                 return int(default)
             raise ValueError(f"{key!r} が {list(lst)} に見つかりません。")
 
-    off_idx = _find(set_on_off_list, "OFF", 0)
-    auto_idx = _find(set_mode_list, "auto", 0)
-    low_idx = _find(set_wind_list, "low", 0)
+    # off_idx = _find(set_on_off_list, "OFF", 0)
+    # fan_mode_idx = _find(set_mode_list, "fan", 0)  # ← mode の 'fan'
+    # auto_wind_idx = _find(set_wind_list, "auto", 0)  # ← wind の 'auto'
+    off_idx = _find(set_on_off_list, 0, 0)
+    fan_mode_idx = _find(set_mode_list, 0, 0)  # ← mode の 'fan'
+    auto_wind_idx = _find(set_wind_list, 4, 0)  # ← wind の 'auto'
 
-    # dist_fn: 俳優からの連結logits → 条件付きマスク分布
     def dist_fn(action_dist_input_BS: torch.Tensor):
         return MultiHeadCategoricalMasked(
             logits_cat=action_dist_input_BS,
@@ -409,11 +388,10 @@ def create_ppo_for_hvac(
             n_wind=n_wind,
             n_onoff=n_onoff,
             off_idx=off_idx,
-            auto_idx=auto_idx,
-            low_idx=low_idx,
+            fan_mode_idx=fan_mode_idx,  # ← 渡す
+            auto_wind_idx=auto_wind_idx,  # ← 渡す
         )
 
-    # Nets
     actor_backbone = Net(state_shape=obs_shape, hidden_sizes=[256, 128], device=device)
     critic_backbone = Net(state_shape=obs_shape, hidden_sizes=[512, 256], device=device)
     actor = MultiDeviceQuadHeadDiscreteActor(
@@ -432,18 +410,19 @@ def create_ppo_for_hvac(
         actor=actor,
         critic=critic,
         optim=optim,
-        dist_fn=dist_fn,  # ★ 条件付きマスク分布
-        action_space=act_space,  # MultiDiscrete
-        action_scaling=False,  # 離散 → False
+        dist_fn=dist_fn,
+        action_space=act_space,
+        action_scaling=False,
         **policy_kwargs,
     ).to(device)
     return policy
 
 
 # ========= 予測アクションを Series にマップするヘルパ =========
-def actions_to_series(
+def actions_to_frame(
     act_indices: np.ndarray | torch.Tensor,
     *,
+    current_time: pd.Timestamp | str,
     set_temp_list: Sequence,
     set_mode_list: Sequence,
     set_wind_list: Sequence,
@@ -453,35 +432,43 @@ def actions_to_series(
     mode_cols: Sequence[str],
     fan_cols: Sequence[str],
     onoff_cols: Sequence[str],
-) -> pd.Series:
+    index_name: str = "Datetime_hour",
+) -> pd.DataFrame:
     """
     policy.forward(...).act（形は [4*n_devices] または [B,4*n_devices]の先頭行）を
-    各デバイスの (temp,mode,wind,onoff)→実値へデコードし、指定カラム名の Series で返す。
+    各デバイスの (temp,mode,wind,onoff)→実値にデコードし、
+    インデックス= current_time の 1行DataFrameで返す。
+
+    返却: DataFrame(1行)
+      index.name = index_name（デフォルト: 'Datetime_hour'）
+      columns = set_cols + mode_cols + fan_cols + onoff_cols
     """
+    # --- act を 1次元 numpy に揃える ---
     if isinstance(act_indices, torch.Tensor):
         act = act_indices.detach().cpu().numpy()
     else:
         act = np.asarray(act_indices)
     if act.ndim == 2:
-        act = act[0]  # 先頭のみ
-
+        act = act[0]
     assert act.shape[0] == 4 * n_devices, f"期待長 4*n_devices に不一致: {act.shape[0]}"
 
+    # --- 選択肢 ---
     vals_temp = list(set_temp_list)
     vals_mode = list(set_mode_list)
     vals_wind = list(set_wind_list)
     vals_onof = list(set_on_off_list)
 
-    out_pairs = []
+    # --- デコード（列名→値 の辞書を作る）---
+    out_map: dict[str, object] = {}
     for d in range(n_devices):
         i_t, i_m, i_w, i_o = act[4 * d : 4 * d + 4].astype(int)
-        v_t = vals_temp[i_t]
-        v_m = vals_mode[i_m]
-        v_w = vals_wind[i_w]
-        v_o = vals_onof[i_o]
-        out_pairs.append((set_cols[d], v_t))
-        out_pairs.append((mode_cols[d], v_m))
-        out_pairs.append((fan_cols[d], v_w))
-        out_pairs.append((onoff_cols[d], v_o))
+        out_map[set_cols[d]] = vals_temp[i_t]
+        out_map[mode_cols[d]] = vals_mode[i_m]
+        out_map[fan_cols[d]] = vals_wind[i_w]
+        out_map[onoff_cols[d]] = vals_onof[i_o]
 
-    return pd.Series(dict(out_pairs))
+    # --- 1行DataFrame化（インデックスに current_time を使用）---
+    ts = pd.Timestamp(current_time)
+    df = pd.DataFrame([out_map], index=[ts])
+    df.index.name = index_name
+    return df
