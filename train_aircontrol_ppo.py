@@ -296,7 +296,7 @@ def main():
         n_devices=26,
         deterministic_eval=True,
         # PPOハイパラ（最低限/保守的）
-        discount_factor=0.99,
+        discount_factor=0.9,
         gae_lambda=0.95,
         eps_clip=0.18,
         value_clip=True,
@@ -380,7 +380,7 @@ def main():
     step_per_epoch = 480  # 1 epoch で集める環境ステップ
     step_per_collect = 240  # 1 collect あたりのサンプル数
     repeat_per_collect = 3  # 収集データでの反復学習回数
-    batch_size = 256
+    batch_size = 128
     episode_per_test = 1
     stop_mean_rew = 0.0  # 適宜変更（AirControl のスケール依存）
     env_snapshots_root = os.path.join(log_root, "env_snapshots")
@@ -400,7 +400,7 @@ def main():
         print(f"[save_best] (archived) -> {uniq}")
         try:
             save_obs_rms_from_vec(
-                train_envs, os.path.join(log_root, "obs_rms_best.npz"), min_count=50
+                train_envs, os.path.join(log_root, "obs_rms_best.npz"), min_count=10
             )
         except Exception as e:
             print(f"[save_best] obs_rms save failed: {e}")

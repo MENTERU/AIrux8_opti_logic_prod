@@ -155,15 +155,6 @@ def make_env_factory_aircontrol(
             reward_params=init_copy.reward_params or RewardParams(),
             enable_obs_rms=enable_obs_rms,
         )
-        root = Path("./logs/aircontrol_ppo/workspaces")
-        root.mkdir(parents=True, exist_ok=True)
-        tag = datetime.now().strftime("%Y%m%d-%H%M%S")
-        pid = os.getpid()
-        seed_str = f"{int(seed)}" if seed is not None else "na"
-        workdir = root / f"pid{pid}_seed{seed_str}_{tag}"
-        workdir.mkdir(parents=True, exist_ok=True)
-        # 環境に設定（Wrapper がここを見る）
-        setattr(env, "_workdir", str(workdir))
         # 3) 任意のシード設定
         if seed is not None:
             try:
