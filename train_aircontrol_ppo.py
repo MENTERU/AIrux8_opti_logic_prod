@@ -5,6 +5,7 @@ import math
 import multiprocessing as mp
 import numbers
 import os
+import time
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 
@@ -194,7 +195,7 @@ def main():
     )
 
     # ====== 環境 ======
-    NUM_TRAIN_ENVS = 2
+    NUM_TRAIN_ENVS = 10
     NUM_TEST_ENVS = 1
     train_fns = [
         make_env_factory_aircontrol(init_args, seed=100 + i)
@@ -303,12 +304,12 @@ def main():
     print("obs_space   :", single_env.observation_space)
 
     # ====== 学習設定 ======
-    max_epoch = 10
-    step_per_epoch = 240  # 1 epoch で集める環境ステップ
-    step_per_collect = 120  # 1 collect あたりのサンプル数
-    repeat_per_collect = 5  # 収集データでの反復学習回数
-    batch_size = 64
-    episode_per_test = 8
+    max_epoch = 25
+    step_per_epoch = 480  # 1 epoch で集める環境ステップ
+    step_per_collect = 240  # 1 collect あたりのサンプル数
+    repeat_per_collect = 3  # 収集データでの反復学習回数
+    batch_size = 256
+    episode_per_test = 1
     stop_mean_rew = 0.0  # 適宜変更（AirControl のスケール依存）
 
     # ベストモデル保存
