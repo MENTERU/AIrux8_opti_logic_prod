@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import copy
 import os
-import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -19,52 +18,6 @@ from deep_reinforcement_learning.environment.control_env import (
     RewardParams,
 )
 from deep_reinforcement_learning.environment.prediction.model import load_residual_model
-
-
-class SaveableWorkspaceWrapper(gym.Wrapper):
-    """
-    どの環境でも save_env_files(out_dir) を呼べるようにするラッパ。
-    1) 環境に save_env_files があれば委譲
-    2) 無ければ _workdir / workdir / workspace_dir / workspace_root を見つけてZIP化
-    """
-
-    def __init__(self, env):
-        super().__init__(env)
-
-    def _guess_workdir(self) -> str | None:
-        for k in ("_workdir", "workdir", "workspace_dir", "workspace_root"):
-            if hasattr(self.unwrapped, k):
-                w = getattr(self.unwrapped, k)
-                if isinstance(w, (str, Path)) and os.path.isdir(w):
-                    return str(w)
-        return None
-
-    def save_env_files(self, out_dir: str) -> bool:
-        # 1) 環境側に専用メソッドがあればそれを使う（選別保存したい時はこちら推奨）
-        if hasattr(self.unwrapped, "save_env_files") and callable(
-            self.unwrapped.save_env_files
-        ):
-            try:
-                return bool(self.unwrapped.save_env_files(out_dir))
-            except Exception as e:
-                print(f"[SaveableWrapper] delegated save_env_files failed: {e}")
-
-        # 2) ワークディレクトリをZIP化（フォールバック）
-        wdir = self._guess_workdir()
-        if not wdir:
-            print("[SaveableWrapper] no workdir attr found; skip.")
-            return False
-
-        os.makedirs(out_dir, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-        zip_no_ext = Path(out_dir) / f"workspace_{ts}"
-        try:
-            shutil.make_archive(str(zip_no_ext), "zip", root_dir=wdir)
-            print(f"[SaveableWrapper] packed -> {zip_no_ext}.zip")
-            return True
-        except Exception as e:
-            print(f"[SaveableWrapper] zip failed: {e}")
-            return False
 
 
 # ============ 監視用: 観測のランニング統計（任意） ============
@@ -218,6 +171,6 @@ def make_env_factory_aircontrol(
             except Exception:
                 pass
 
-        return SaveableWorkspaceWrapper(env)
+        return env
 
     return _thunk

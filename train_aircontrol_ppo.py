@@ -5,11 +5,9 @@ import math
 import multiprocessing as mp
 import numbers
 import os
-import shutil  # ★ 追加
 import time
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
-from pathlib import Path  # ★ 追加（便利なので）
 
 import numpy as np
 import pandas as pd
@@ -36,8 +34,80 @@ from deep_reinforcement_learning.environment.worker_space import (
     make_env_factory_aircontrol,
 )
 
-
 # ---------- 便利フック: update() 経由で KL/clip_frac/entropy を確実ロギング ----------
+
+
+def _coerce_rms(r):
+    try:
+        if r is None:
+            return None
+        if isinstance(r, dict):
+            m = np.asarray(r.get("mean", None), dtype=np.float64)
+            v = np.asarray(r.get("var", None), dtype=np.float64)
+            c = float(r.get("count", 0.0))
+            if m is None or v is None:
+                return None
+            return m, v, c
+        m = np.asarray(getattr(r, "mean", None), dtype=np.float64)
+        v = np.asarray(getattr(r, "var", None), dtype=np.float64)
+        cnt = None
+        for k in ("count", "n", "num_steps", "steps", "total_count"):
+            if hasattr(r, k):
+                cnt = float(getattr(r, k))
+                break
+        if m is None or v is None or cnt is None:
+            return None
+        return m, v, cnt
+    except Exception:
+        return None
+
+
+def save_obs_rms_from_vec(vec_env, npz_path: str, min_count: float = 0.0) -> bool:
+    """
+    SubprocVectorEnv から各ワーカーの obs_rms を集め、
+    count が最大のものを npz で保存（mean/var/count）。
+    """
+    cands = []
+
+    # 1) get_obs_rms を直接呼べる場合（推奨）
+    if hasattr(vec_env, "call_env_method"):
+        try:
+            lst = vec_env.call_env_method("get_obs_rms")
+            for r in lst or []:
+                z = _coerce_rms(r)
+                if z is not None:
+                    cands.append(z)
+        except Exception as e:
+            print(f"[obs_rms] call_env_method('get_obs_rms') failed: {e}")
+
+    # 2) フォールバック：属性を覗く
+    if not cands and hasattr(vec_env, "get_env_attr"):
+        for key in ("obs_rms", "_obs_rms", "rms"):
+            try:
+                lst = vec_env.get_env_attr(key)
+            except Exception:
+                lst = []
+            for r in lst or []:
+                z = _coerce_rms(r)
+                if z is not None:
+                    cands.append(z)
+
+    if not cands:
+        print("[obs_rms] not found on workers; skip")
+        return False
+
+    # 3) 最大カウントを選ぶ
+    best = max(cands, key=lambda t: t[2])
+    mean, var, cnt = best
+    if cnt <= min_count:
+        print(f"[obs_rms] count={cnt:.1f} <= {min_count}; skip")
+        return False
+
+    np.savez(npz_path, mean=mean, var=var, count=np.asarray(cnt, dtype=np.float64))
+    print(f"[obs_rms] saved -> {npz_path} (count={cnt:.1f})")
+    return True
+
+
 def attach_update_logging_to_tb(policy, writer, tags=None, prefix="update"):
     orig_update = policy.update
     step = {"n": 0}
@@ -165,88 +235,6 @@ def attach_update_logging_to_tb(policy, writer, tags=None, prefix="update"):
 
     policy.update = wrapped_update
     return policy
-
-
-# ---------- 環境スナップショット保存ユーティリティ ----------
-def _zip_dir(src_dir: str | Path, zip_path_no_ext: str | Path) -> str:
-    """src_dir の内容を zip で固める。戻り値は .zip の実パス。"""
-    src_dir = str(src_dir)
-    zip_path_no_ext = str(zip_path_no_ext)
-    # shutil.make_archive は拡張子無しを渡す
-    out = shutil.make_archive(zip_path_no_ext, "zip", root_dir=src_dir)
-    return out
-
-
-def _ensure_dir(p: str | Path) -> Path:
-    p = Path(p)
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-def _gather_env_workdirs(vec_env: SubprocVectorEnv) -> list[tuple[int, str]]:
-    """各ワーカーの作業ディレクトリ候補（_workdir 等）を収集して返す。"""
-    results: list[tuple[int, str]] = []
-    # まず _workdir を試す
-    try:
-        arr = vec_env.get_env_attr("_workdir")
-        if arr:
-            for i, w in enumerate(arr):
-                if isinstance(w, (str, Path)) and w:
-                    results.append((i, str(w)))
-    except Exception:
-        pass
-    # 代替キーがあればここに追加で覗く
-    for alt_key in ("workdir", "workspace_dir", "workspace_root"):
-        try:
-            arr = vec_env.get_env_attr(alt_key)
-        except Exception:
-            arr = []
-        for i, w in enumerate(arr or []):
-            if isinstance(w, (str, Path)) and w and (i, str(w)) not in results:
-                results.append((i, str(w)))
-    return results
-
-
-def save_env_files_from_vec(
-    vec_env: SubprocVectorEnv, out_root: str | Path, tag: str
-) -> None:
-    """
-    ベスト更新タイミングで、ベクタ環境の各ワーカーから環境ファイルを保存する。
-    1) 環境側に save_env_files(out_dir) があればそれを呼ぶ
-    2) 無ければ _workdir を zip 化して保存
-    """
-    out_root = _ensure_dir(out_root)
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    snap_dir = _ensure_dir(out_root / f"{tag}_{ts}")
-
-    # 1) メソッドでのスナップショット（各ワーカー任意実装）
-    used_method = False
-    if hasattr(vec_env, "call_env_method"):
-        try:
-            # save_env_files(out_dir) を各ワーカーに投げる
-            # 返り値は任意（True/False/None）でOK
-            rets = vec_env.call_env_method("save_env_files", snap_dir.as_posix())
-            if rets is not None:
-                # 1つでも True/何か 返ってきたら「使えた」と見なす
-                used_method = any(bool(x) for x in rets if x is not None)
-        except Exception as e:
-            print(f"[env-snapshot] call_env_method('save_env_files') failed: {e}")
-
-    # 2) フォールバック：_workdir 等をZIP化
-    if not used_method:
-        workdirs = _gather_env_workdirs(vec_env)
-        if not workdirs:
-            print("[env-snapshot] no workdir found on vector env; skip packing.")
-            return
-        for idx, wdir in workdirs:
-            try:
-                if not os.path.isdir(wdir):
-                    continue
-                zip_no_ext = snap_dir / f"worker{idx:02d}_workspace"
-                zip_path = _zip_dir(wdir, zip_no_ext)
-                print(f"[env-snapshot] packed worker {idx} -> {zip_path}")
-            except Exception as e:
-                print(f"[env-snapshot] packing worker {idx} failed: {e}")
 
 
 def main():
@@ -411,13 +399,11 @@ def main():
         torch.save(policy_obj.state_dict(), uniq)
         print(f"[save_best] (archived) -> {uniq}")
         try:
-            save_env_files_from_vec(train_envs, log_root, tag=f"train_best_{ts}")
+            save_obs_rms_from_vec(
+                train_envs, os.path.join(log_root, "obs_rms_best.npz"), min_count=50
+            )
         except Exception as e:
-            print(f"[save_best] train env snapshot failed: {e}")
-        try:
-            save_env_files_from_vec(test_envs, log_root, tag=f"test_best_{ts}")
-        except Exception as e:
-            print(f"[save_best] test env snapshot failed: {e}")
+            print(f"[save_best] obs_rms save failed: {e}")
 
     # ====== トレーナ起動 ======
     result = OnpolicyTrainer(
@@ -438,6 +424,12 @@ def main():
     print("Training finished:", result)
     print("TensorBoard:", tb_run_dir)
     print("Best policy:", best_path, os.path.exists(best_path))
+    try:
+        save_obs_rms_from_vec(
+            train_envs, os.path.join(log_root, "obs_rms_final.npz"), min_count=0
+        )
+    except Exception as e:
+        print(f"[final] obs_rms save failed: {e}")
 
 
 if __name__ == "__main__":
