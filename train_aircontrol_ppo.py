@@ -5,9 +5,11 @@ import math
 import multiprocessing as mp
 import numbers
 import os
+import shutil  # ★ 追加
 import time
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
+from pathlib import Path  # ★ 追加（便利なので）
 
 import numpy as np
 import pandas as pd
@@ -165,6 +167,88 @@ def attach_update_logging_to_tb(policy, writer, tags=None, prefix="update"):
     return policy
 
 
+# ---------- 環境スナップショット保存ユーティリティ ----------
+def _zip_dir(src_dir: str | Path, zip_path_no_ext: str | Path) -> str:
+    """src_dir の内容を zip で固める。戻り値は .zip の実パス。"""
+    src_dir = str(src_dir)
+    zip_path_no_ext = str(zip_path_no_ext)
+    # shutil.make_archive は拡張子無しを渡す
+    out = shutil.make_archive(zip_path_no_ext, "zip", root_dir=src_dir)
+    return out
+
+
+def _ensure_dir(p: str | Path) -> Path:
+    p = Path(p)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _gather_env_workdirs(vec_env: SubprocVectorEnv) -> list[tuple[int, str]]:
+    """各ワーカーの作業ディレクトリ候補（_workdir 等）を収集して返す。"""
+    results: list[tuple[int, str]] = []
+    # まず _workdir を試す
+    try:
+        arr = vec_env.get_env_attr("_workdir")
+        if arr:
+            for i, w in enumerate(arr):
+                if isinstance(w, (str, Path)) and w:
+                    results.append((i, str(w)))
+    except Exception:
+        pass
+    # 代替キーがあればここに追加で覗く
+    for alt_key in ("workdir", "workspace_dir", "workspace_root"):
+        try:
+            arr = vec_env.get_env_attr(alt_key)
+        except Exception:
+            arr = []
+        for i, w in enumerate(arr or []):
+            if isinstance(w, (str, Path)) and w and (i, str(w)) not in results:
+                results.append((i, str(w)))
+    return results
+
+
+def save_env_files_from_vec(
+    vec_env: SubprocVectorEnv, out_root: str | Path, tag: str
+) -> None:
+    """
+    ベスト更新タイミングで、ベクタ環境の各ワーカーから環境ファイルを保存する。
+    1) 環境側に save_env_files(out_dir) があればそれを呼ぶ
+    2) 無ければ _workdir を zip 化して保存
+    """
+    out_root = _ensure_dir(out_root)
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    snap_dir = _ensure_dir(out_root / f"{tag}_{ts}")
+
+    # 1) メソッドでのスナップショット（各ワーカー任意実装）
+    used_method = False
+    if hasattr(vec_env, "call_env_method"):
+        try:
+            # save_env_files(out_dir) を各ワーカーに投げる
+            # 返り値は任意（True/False/None）でOK
+            rets = vec_env.call_env_method("save_env_files", snap_dir.as_posix())
+            if rets is not None:
+                # 1つでも True/何か 返ってきたら「使えた」と見なす
+                used_method = any(bool(x) for x in rets if x is not None)
+        except Exception as e:
+            print(f"[env-snapshot] call_env_method('save_env_files') failed: {e}")
+
+    # 2) フォールバック：_workdir 等をZIP化
+    if not used_method:
+        workdirs = _gather_env_workdirs(vec_env)
+        if not workdirs:
+            print("[env-snapshot] no workdir found on vector env; skip packing.")
+            return
+        for idx, wdir in workdirs:
+            try:
+                if not os.path.isdir(wdir):
+                    continue
+                zip_no_ext = snap_dir / f"worker{idx:02d}_workspace"
+                zip_path = _zip_dir(wdir, zip_no_ext)
+                print(f"[env-snapshot] packed worker {idx} -> {zip_path}")
+            except Exception as e:
+                print(f"[env-snapshot] packing worker {idx} failed: {e}")
+
+
 def main():
     # macOS/Windows 対応（spawn）
     try:
@@ -311,7 +395,8 @@ def main():
     batch_size = 256
     episode_per_test = 1
     stop_mean_rew = 0.0  # 適宜変更（AirControl のスケール依存）
-
+    env_snapshots_root = os.path.join(log_root, "env_snapshots")
+    os.makedirs(env_snapshots_root, exist_ok=True)
     # ベストモデル保存
     best_path = os.path.join(log_root, "policy_best.pth")
 
@@ -325,6 +410,14 @@ def main():
         uniq = os.path.join(log_root, f"policy_best_{ts}_{int(time.time())}.pth")
         torch.save(policy_obj.state_dict(), uniq)
         print(f"[save_best] (archived) -> {uniq}")
+        try:
+            save_env_files_from_vec(train_envs, env_snapshots_root, tag="train_best")
+        except Exception as e:
+            print(f"[save_best] train env snapshot failed: {e}")
+        try:
+            save_env_files_from_vec(test_envs, env_snapshots_root, tag="test_best")
+        except Exception as e:
+            print(f"[save_best] test env snapshot failed: {e}")
 
     # ====== トレーナ起動 ======
     result = OnpolicyTrainer(
