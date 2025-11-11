@@ -343,41 +343,56 @@ def create_ppo_for_hvac(
     set_temp_list: Sequence,
     set_mode_list: Sequence,  # 例: ["fan","cool","heat"]
     set_wind_list: Sequence,  # 例: ["low","mid","high","top","auto"]
-    set_on_off_list: Sequence,  # ← ユーザー変数名が set_activate_list の場合はここに渡す
+    set_on_off_list: Sequence,  # 例: ["OFF","ON"] もしくは [0,1]
     n_devices: int,
+    *,
+    actor_hidden=(256, 128),
+    critic_hidden=(512, 256),
     **ppo_kwargs,
 ):
+    """HVAC用のPPO Policyを作成（MultiDiscrete × 台数、条件付きマスク対応）"""
+
+    # ---- 形状など ----
     obs_shape = single_env.observation_space.shape
     act_space = single_env.action_space
-    assert isinstance(act_space, gym.spaces.MultiDiscrete)
+    assert isinstance(
+        act_space, gym.spaces.MultiDiscrete
+    ), "action_space は MultiDiscrete 想定です。"
 
-    n_temp = len(set_temp_list)
-    n_mode = len(set_mode_list)
-    n_wind = len(set_wind_list)
-    n_onoff = len(set_on_off_list)
+    n_temp = int(len(set_temp_list))
+    n_mode = int(len(set_mode_list))
+    n_wind = int(len(set_wind_list))
+    n_onoff = int(len(set_on_off_list))
     slice_sizes = [n_temp, n_mode, n_wind, n_onoff] * n_devices
 
     expected = np.array(slice_sizes, dtype=np.int64)
     if not (
         act_space.nvec.size == expected.size and np.all(act_space.nvec == expected)
     ):
-        print("⚠️ action_space.nvec が [temp,mode,wind,onoff]×台数 と一致していません。")
+        print(
+            "⚠️ action_space.nvec が [temp, mode, wind, onoff]×台数 と一致していません。"
+        )
 
-    def _find(lst, key, default=None):
-        try:
-            return int(list(lst).index(key))
-        except ValueError:
-            if default is not None:
-                return int(default)
-            raise ValueError(f"{key!r} が {list(lst)} に見つかりません。")
+    # ---- インデックス検出（"OFF"/"fan"/"auto" でも数値でもOKな汎用関数） ----
+    def _find_index(seq: Sequence, target, default_idx: int):
+        seq_list = list(seq)
+        # 数値で指定された場合（例: 0 や 4）
+        if isinstance(target, int):
+            return target if 0 <= target < len(seq_list) else default_idx
+        # 文字列で指定された場合（例: "OFF", "fan", "auto"）
+        if isinstance(target, str):
+            low = target.strip().lower()
+            for i, v in enumerate(seq_list):
+                if isinstance(v, str) and v.strip().lower() == low:
+                    return i
+        return default_idx
 
-    # off_idx = _find(set_on_off_list, "OFF", 0)
-    # fan_mode_idx = _find(set_mode_list, "fan", 0)  # ← mode の 'fan'
-    # auto_wind_idx = _find(set_wind_list, "auto", 0)  # ← wind の 'auto'
-    off_idx = _find(set_on_off_list, 0, 0)
-    fan_mode_idx = _find(set_mode_list, 0, 0)  # ← mode の 'fan'
-    auto_wind_idx = _find(set_wind_list, 4, 0)  # ← wind の 'auto'
+    # "OFF" / "fan" / "auto" を優先して探し、なければ fallback
+    off_idx = _find_index(set_on_off_list, "OFF", 0)
+    fan_mode_idx = _find_index(set_mode_list, "fan", 0)
+    auto_wind_idx = _find_index(set_wind_list, "auto", max(0, n_wind - 1))
 
+    # ---- dist_fn: Actor出力(logits_cat) → 条件付きマスク付き分布 ----
     def dist_fn(action_dist_input_BS: torch.Tensor):
         return MultiHeadCategoricalMasked(
             logits_cat=action_dist_input_BS,
@@ -388,33 +403,44 @@ def create_ppo_for_hvac(
             n_wind=n_wind,
             n_onoff=n_onoff,
             off_idx=off_idx,
-            fan_mode_idx=fan_mode_idx,  # ← 渡す
-            auto_wind_idx=auto_wind_idx,  # ← 渡す
+            fan_mode_idx=fan_mode_idx,
+            auto_wind_idx=auto_wind_idx,
         )
 
-    actor_backbone = Net(state_shape=obs_shape, hidden_sizes=[256, 128], device=device)
-    critic_backbone = Net(state_shape=obs_shape, hidden_sizes=[512, 256], device=device)
+    # ---- ネットワーク ----
+    actor_backbone = Net(
+        state_shape=obs_shape, hidden_sizes=list(actor_hidden), device=device
+    )
+    critic_backbone = Net(
+        state_shape=obs_shape, hidden_sizes=list(critic_hidden), device=device
+    )
+
     actor = MultiDeviceQuadHeadDiscreteActor(
         actor_backbone, n_devices, n_temp, n_mode, n_wind, n_onoff, device=device
     ).to(device)
     critic = Critic(critic_backbone, device=device).to(device)
 
+    # ---- Optimizer ----
     optim = torch.optim.Adam(
         list(actor.parameters()) + list(critic.parameters()), lr=lr
     )
-    policy_kwargs = dict(ppo_kwargs)
-    policy_kwargs.pop("action_scaling", None)
-    policy_kwargs.pop("action_space", None)
 
+    # PPOPolicy に渡す不要キーを除去
+    policy_kwargs = dict(ppo_kwargs)
+    policy_kwargs.pop("action_scaling", None)  # 本ポリシーでは使わない
+    policy_kwargs.pop("action_space", None)  # policy 側で設定するため除去
+
+    # ---- Policy ----
     policy = PPOPolicy(
         actor=actor,
         critic=critic,
         optim=optim,
-        dist_fn=dist_fn,
-        action_space=act_space,
-        action_scaling=False,
+        dist_fn=dist_fn,  # ← 最重要：ここで分布を組み立てる
+        action_space=act_space,  # MultiDiscrete([n_temp, n_mode, n_wind, n_onoff] * n_devices)
+        action_scaling=False,  # 離散なのでスケーリング不要
         **policy_kwargs,
     ).to(device)
+
     return policy
 
 

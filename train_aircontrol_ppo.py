@@ -18,6 +18,12 @@ from tianshou.trainer import OnpolicyTrainer
 from torch.utils.tensorboard import SummaryWriter
 
 from deep_reinforcement_learning.agent.ppo_agent import create_ppo_for_hvac
+from deep_reinforcement_learning.const import (
+    set_fan_range,
+    set_mode_range,
+    set_on_off_range,
+    set_temp_range,
+)
 
 # ==== あなたの既存モジュール ====
 from deep_reinforcement_learning.environment.prediction.model import load_residual_model
@@ -99,24 +105,20 @@ def attach_update_logging_to_tb(policy, writer, tags=None, prefix="update"):
     @torch.no_grad()
     def _compute_mean_entropy_from_batch(batch):
         device = next(policy.parameters()).device
-        if hasattr(batch, "to_torch"):
-            b = batch.to_torch(dtype=torch.float32, device=device)
-            obs = b.obs
-            state = getattr(b, "state", None)
-            info = getattr(b, "info", None)
-        else:
+        if not hasattr(batch, "to_torch"):
             return None
-        out = (
-            policy.actor(obs, state=state, info=info)
-            if callable(policy.actor)
-            else None
-        )
+        b = batch.to_torch(dtype=torch.float32, device=device)
+        obs = b.obs
+        state = getattr(b, "state", None)
+        info = getattr(b, "info", None)
+
+        out = policy.actor(obs, state=state, info=info)
+        logits = out[0] if isinstance(out, (tuple, list)) else out  # ★ここを追加
         try:
-            dist = policy.dist_fn(out)
+            dist = policy.dist_fn(logits)
         except Exception:
-            dist = None
-        if dist is None:
             return None
+
         ent = dist.entropy()
         if isinstance(ent, torch.Tensor) and ent.ndim > 1:
             ent = ent.sum(dim=tuple(range(1, ent.ndim)))
@@ -213,6 +215,11 @@ def main():
         single_env=single_env,
         device=device,
         lr=3e-4,
+        set_temp_list=set_temp_range,
+        set_mode_list=set_mode_range,
+        set_wind_list=set_fan_range,
+        set_on_off_list=set_on_off_range,
+        n_devices=26,
         deterministic_eval=True,
         # PPOハイパラ（最低限/保守的）
         discount_factor=0.99,
@@ -227,6 +234,36 @@ def main():
     )
     policy.actor.to(device)
     policy.critic.to(device)
+    _orig_update = policy.update
+
+    def _update_with_dist_flag(*args, **kwargs):
+        setattr(policy, "_return_dist", True)
+        try:
+            return _orig_update(*args, **kwargs)
+        finally:
+            setattr(policy, "_return_dist", False)
+
+    policy.update = _update_with_dist_flag
+    _orig_forward = policy.forward
+
+    def _forward_conditional(*args, **kwargs):
+        ret = _orig_forward(*args, **kwargs)
+        # ret は Tianshou の Batch 互換（ActBatch）想定
+        if not getattr(policy, "_return_dist", False):
+            # 収集時: dist を除去（Collector が len() を取っても安全になる）
+            if isinstance(ret, TBatch):
+                if hasattr(ret, "dist"):
+                    try:
+                        delattr(ret, "dist")
+                    except Exception:
+                        # Batch 実装によっては dict として保持されることもある
+                        try:
+                            ret.pop("dist")
+                        except Exception:
+                            pass
+        return ret
+
+    policy.forward = _forward_conditional
 
     # ====== Collector / Buffer ======
     train_collector = Collector(
@@ -269,7 +306,7 @@ def main():
     print("obs_space   :", single_env.observation_space)
 
     # ====== 学習設定 ======
-    max_epoch = 60
+    max_epoch = 10
     step_per_epoch = 240  # 1 epoch で集める環境ステップ
     step_per_collect = 120  # 1 collect あたりのサンプル数
     repeat_per_collect = 5  # 収集データでの反復学習回数

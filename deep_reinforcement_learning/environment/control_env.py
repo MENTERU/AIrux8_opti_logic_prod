@@ -177,25 +177,22 @@ class AirControlEnv(gym.Env):
         - info: 現在の設定温度インデックスなど
         """
         df = self.base_df if base_df is None else base_df
-        if not isinstance(df.index, pd.DatetimeIndex):
-            raise ValueError("base_df.index は DatetimeIndex 必須です。")
         df = df.sort_index()
-
         last_row: pd.Series = df.iloc[-1]
-        t_curr: pd.Timestamp = last_row.name
 
-        # 観測ベクトル
-        obs_vec = self._vectorize_obs(last_row)  # (obs_dim,)
-        assert obs_vec.shape == (self.obs_dim,), (obs_vec.shape, self.obs_dim)
+        # 観測は 1D（バッチ次元を付けない）
+        obs_vec = self._vectorize_obs(last_row)  # shape: (obs_dim,)
 
+        # current_temp_index も 1D（バッチ次元を付けない）
         idx_list = [
             self._nearest_settemp_index(last_row[c]) if c in last_row.index else None
             for c in self.set_temp_cols
         ]
         cur_idx = np.array(
             [-1 if v is None else int(v) for v in idx_list], dtype=np.int64
-        )[None, :]
-        info = {"current_temp_index": cur_idx, "time": t_curr}
+        )  # (n_devices,)
+
+        info = {"current_temp_index": cur_idx, "time": last_row.name}
         return obs_vec.astype(np.float32, copy=False), info
 
     def get_batch(self, base_df: pd.DataFrame | None = None) -> TBatch:
