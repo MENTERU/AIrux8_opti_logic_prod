@@ -1,9 +1,9 @@
 [project]
-name = "airux8-opti-logic"
+name = "job-clea-data-scraping"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.115.0",
     "google-api-python-client>=2.146.0",
@@ -16,18 +16,13 @@ dependencies = [
     "numpy<2",
     "openpyxl>=3.1.5",
     "pandas>=2.3.2",
-    "playwright>=1.55.0",
     "plotly>=6.3.0",
     "pyyaml>=6.0.3",
     "requests>=2.32.5",
     "scikit-learn>=1.7.2",
     "seaborn>=0.13.2",
-    "secret-manager>=0.0.3",
     "shap>=0.48.0",
-    "streamlit",
     "uvicorn[standard]>=0.30.0",
     "xgboost>=3.0.5",
+    "playwright>=1.40.0",
 ]
-
-[tool.uv.workspace]
-members = ["jobs/job-clea-data-scraping"]

@@ -1,0 +1,43 @@
+services:
+  # Backend
+  job-clea-data-scraping: &job-clea-data-scraping
+    container_name: job-clea-data-scraping
+    build:
+      context: .
+      dockerfile: Dockerfile
+      cache_from:
+        - airux8_opti_logic-job-clea-data-scraping:latest
+    volumes:
+      - .:/app
+      - job-clea-venv:/app/.venv
+    working_dir: /app
+    # Development: use --reload for auto-restart on file changes
+    command: uv run uvicorn main:app --host=0.0.0.0 --port=8080 --reload
+    # Production: remove --reload to prevent auto-restarts
+    # command: uv run uvicorn main:app --host=0.0.0.0 --port=8080
+
+    networks:
+      - menteru-net
+
+    # 環境変数（必要に応じて追加）
+    # env_file:
+    #   - .env
+    ports:
+      - "8080:8080"
+
+    restart: unless-stopped
+    environment:
+      # 開発環境変数
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONUNBUFFERED=1
+      - LOCAL_DATA_ROOT=/app/data
+      - PROJECT_ID=airux8-opti-logic
+      - BUCKET_NAME=airux8-opti-logic-prod
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/config/job-clea-data-scraping-sa.json
+
+volumes:
+  job-clea-venv:
+
+networks:
+  menteru-net:
+    driver: bridge

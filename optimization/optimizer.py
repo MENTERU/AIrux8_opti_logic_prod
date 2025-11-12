@@ -59,7 +59,7 @@ class Optimizer:
                 If False (default), simply select the pattern with lowest power consumption.
         """
         # Weather weights for block distance calculation
-        self.WEATHER_WEIGHTS = {"temperature": 0.7, "solar_radiation": 0.3}
+        self.WEATHER_WEIGHTS = {"temperature": 1.0, "solar_radiation": 1.0}
         # AC Mode mapping: operation type string to numeric value
         self.OPERATION_TYPE_TO_MODE = {"COOL": 1, "HEAT": 2, "FAN": 3, "OFF": 0}
         # Whether to use zone operating hours for optimization (default: False)
@@ -260,12 +260,12 @@ class Optimizer:
         if operation_type_upper == "COOL":
             return [
                 self.OPERATION_TYPE_TO_MODE["COOL"],
-                # self.OPERATION_TYPE_TO_MODE["FAN"],
+                self.OPERATION_TYPE_TO_MODE["FAN"],
             ]
         elif operation_type_upper == "HEAT":
             return [
                 self.OPERATION_TYPE_TO_MODE["HEAT"],
-                # self.OPERATION_TYPE_TO_MODE["FAN"],
+                self.OPERATION_TYPE_TO_MODE["FAN"],
             ]
         else:
             # For FAN or OFF, only allow the exact mode
