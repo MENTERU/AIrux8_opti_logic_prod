@@ -334,7 +334,11 @@ class AirControlEnv(gym.Env):
 
         # 報酬
         reward, rinfo = self.calc_reward(pred_row)
-
+        try:
+            pred_cols = list(pred_df.columns)
+            info_pred = {f"pred__{c}": float(pred_row[c]) for c in pred_cols}
+        except Exception:
+            info_pred = {}
         # 状態更新（DPに実績として取り込み、時間を+1h）
         self.update_state(pred_df)
 
@@ -345,7 +349,8 @@ class AirControlEnv(gym.Env):
         # 追加情報
         info.update(rinfo)
         info["time"] = self.current_time
-
+        if info_pred:
+            info["predicted"] = info_pred
         # 終了判定
         terminated = bool(self.current_time >= self.end_term)
         truncated = False
