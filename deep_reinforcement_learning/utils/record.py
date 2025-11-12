@@ -1,10 +1,85 @@
 # ---------- 便利フック: update() 経由で KL/clip_frac/entropy を確実ロギング ----------
+# ==== 追加インポート ====
+import json
 import math
 import numbers
 from dataclasses import asdict, is_dataclass
+from typing import Any, Dict
 
 import numpy as np
 import torch
+from torch.utils.tensorboard import SummaryWriter
+
+
+# ==== 追加ユーティリティ ====
+def _safe_getattr(obj, name: str, default=None):
+    try:
+        return getattr(obj, name)
+    except Exception:
+        return default
+
+
+def _get_optimizer_lr(policy) -> float | None:
+    # Tianshou PPOPolicy は policy.optim を持つ想定
+    opt = _safe_getattr(policy, "optim", None)
+    if opt and len(opt.param_groups) > 0:
+        return opt.param_groups[0].get("lr", None)
+    return None
+
+
+def summarize_hparams_to_tb(
+    writer: SummaryWriter,
+    *,
+    policy,
+    device: torch.device,
+    train_envs,
+    test_envs,
+    set_temp_list,
+    set_mode_list,
+    set_wind_list,
+    set_on_off_list,
+    n_devices: int,
+    trainer_cfg: Dict[str, Any],
+):
+    hparams: Dict[str, Any] = {
+        "algo": "PPO(HVAC)",
+        "device": str(device),
+        "optimizer": {
+            "lr": _get_optimizer_lr(policy),
+        },
+        "ppo": {
+            "discount_factor": _safe_getattr(policy, "gamma", None),
+            "gae_lambda": _safe_getattr(policy, "gae_lambda", None),
+            "eps_clip": _safe_getattr(policy, "eps_clip", None),
+            "value_clip": _safe_getattr(policy, "value_clip", None),
+            "vf_coef": _safe_getattr(policy, "vf_coef", None),
+            "ent_coef": _safe_getattr(policy, "ent_coef", None),
+            "max_grad_norm": _safe_getattr(policy, "max_grad_norm", None),
+            "advantage_normalization": _safe_getattr(
+                policy, "advantage_normalization", None
+            ),
+            "reward_normalization": _safe_getattr(policy, "reward_normalization", None),
+        },
+        "env": {
+            "train_envs": int(getattr(train_envs, "env_num", 0)),
+            "test_envs": int(getattr(test_envs, "env_num", 0)),
+            "n_devices": n_devices,
+        },
+        "action_space": {
+            "temp_classes": len(set_temp_list),
+            "mode_classes": len(set_mode_list),
+            "wind_classes": len(set_wind_list),
+            "onoff_classes": len(set_on_off_list),
+            "temp_values": list(set_temp_list),
+            "mode_values": list(set_mode_list),
+            "wind_values": list(set_wind_list),
+            "onoff_values": list(set_on_off_list),
+        },
+        "trainer": trainer_cfg,
+    }
+
+    txt = "```\n" + json.dumps(hparams, ensure_ascii=False, indent=2) + "\n```"
+    writer.add_text("hparams", txt)
 
 
 def _coerce_rms(r):

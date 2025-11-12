@@ -32,6 +32,7 @@ from deep_reinforcement_learning.environment.worker_space import (
 from deep_reinforcement_learning.utils.record import (
     attach_update_logging_to_tb,
     save_obs_rms_from_vec,
+    summarize_hparams_to_tb,
 )
 
 
@@ -144,21 +145,41 @@ def main():
         buffer=VectorReplayBuffer(80000, train_envs.env_num),
     )
     test_collector = Collector(policy=policy, env=test_envs)
-    log_root = f"./logs/aircontrol_ppo/{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    date_str = pd.Timestamp(init_args.start_term).strftime("%Y%m%d")
+    base_log_root = f"./logs/aircontrol_ppo/{date_str}"
+    log_root = base_log_root
+    idx = 2
+    while os.path.exists(log_root):
+        log_root = f"{base_log_root}_{idx:02d}"
+        idx += 1
     os.makedirs(log_root, exist_ok=True)
+
     tb_run_dir = os.path.join(log_root, "runs", "ppo")
     os.makedirs(tb_run_dir, exist_ok=True)
 
     writer = SummaryWriter(tb_run_dir)
-    writer.add_text(
-        "hparams",
-        "algo=PPO(HVAC), lr=3e-4, gamma=0.99, gae_lambda=0.95, eps_clip=0.18, "
-        f"vf_coef=0.5, ent_coef=0.0, max_grad_norm=0.5, "
-        f"envs={train_envs.env_num}/{test_envs.env_num}, "
-        "step_per_epoch=240, step_per_collect=120, repeat_per_collect=5, batch_size=64",
-    )
     logger = TensorboardLogger(writer)
-
+    trainer_cfg = dict(
+        step_per_epoch=480,  # ↓この後で使う定義値と揃える
+        step_per_collect=240,
+        repeat_per_collect=3,
+        batch_size=128,
+        episode_per_test=1,
+        stop_mean_rew=0.0,
+    )
+    summarize_hparams_to_tb(
+        writer,
+        policy=policy,
+        device=device,
+        train_envs=train_envs,
+        test_envs=test_envs,
+        set_temp_list=set_temp_range,
+        set_mode_list=set_mode_range,
+        set_wind_list=set_fan_range,
+        set_on_off_list=set_on_off_range,
+        n_devices=26,
+        trainer_cfg=trainer_cfg,
+    )
     # 追加の update ロギング
     policy = attach_update_logging_to_tb(policy, writer)
 
@@ -175,15 +196,14 @@ def main():
 
     # ====== 学習設定 ======
     max_epoch = 10
-    step_per_epoch = 480  # 1 epoch で集める環境ステップ
-    step_per_collect = 240  # 1 collect あたりのサンプル数
-    repeat_per_collect = 3  # 収集データでの反復学習回数
-    batch_size = 128
-    episode_per_test = 1
-    stop_mean_rew = 0.0  # 適宜変更（AirControl のスケール依存）
+    step_per_epoch = trainer_cfg["step_per_epoch"]
+    step_per_collect = trainer_cfg["step_per_collect"]
+    repeat_per_collect = trainer_cfg["repeat_per_collect"]
+    batch_size = trainer_cfg["batch_size"]
+    episode_per_test = trainer_cfg["episode_per_test"]
+    stop_mean_rew = trainer_cfg["stop_mean_rew"]
     env_snapshots_root = os.path.join(log_root, "env_snapshots")
     os.makedirs(env_snapshots_root, exist_ok=True)
-    # ベストモデル保存
     best_path = os.path.join(log_root, "policy_best.pth")
 
     def save_best_fn(policy_obj):
