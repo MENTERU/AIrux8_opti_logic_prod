@@ -146,20 +146,25 @@ def run_one_episode_and_dump(
 
         # action mask を info から（あれば）渡す
         info_batch = TBatch()
-        if (
-            isinstance(info, dict)
-            and "action_mask" in info
-            and info["action_mask"] is not None
-        ):
-            mask_np = np.asarray(info["action_mask"], dtype=np.float32)
-            if mask_np.ndim == 1:
-                mask_np = mask_np[None, :]
-            info_batch = TBatch(action_mask=mask_np)
+        if isinstance(info, dict):
+            # 1) action_mask
+            if "action_mask" in info and info["action_mask"] is not None:
+                mask_np = np.asarray(info["action_mask"], dtype=np.float32)
+                if mask_np.ndim == 1:
+                    mask_np = mask_np[None, :]
+                info_batch.action_mask = mask_np
+
+            # 2) current_temp_index（±2マスクの要）
+            if "current_temp_index" in info and info["current_temp_index"] is not None:
+                cur_idx = np.asarray(info["current_temp_index"], dtype=np.int64)
+                # 形を [B, n_devices] にそろえる（B=1）
+                if cur_idx.ndim == 1:
+                    cur_idx = cur_idx[None, :]
+                info_batch.current_temp_index = cur_idx
 
         with torch.no_grad():
             out = policy(TBatch(obs=obs_tensor, info=info_batch))
             act = out.act.detach().cpu().numpy()[0].astype(int)
-
         # ステップ実行
         obs, rew, term, trunc, info = env.step(act)
         ep_ret += float(rew)
@@ -250,13 +255,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-csv", type=str, default="data/base/hourly_filled.csv")
     parser.add_argument("--model-path", type=str, default="models/xgb_weight.joblib")
-    parser.add_argument("--start-term", type=str, default="2025-09-11 07:00:00")
-    parser.add_argument("--end-term", type=str, default="2025-09-12 07:00:00")
+    parser.add_argument("--start-term", type=str, default="2025-09-10 07:00:00")
+    parser.add_argument("--end-term", type=str, default="2025-09-11 07:00:00")
     parser.add_argument(
         "--weights-root",
         type=str,
         required=False,
-        default="./logs/aircontrol_ppo/20250911",
+        default="./logs/aircontrol_ppo/20250910",
         help="train の日付フォルダ（例: ./logs/aircontrol_ppo/20250911）",
     )
     parser.add_argument("--out-dir", type=str, default="./replay_outputs")
