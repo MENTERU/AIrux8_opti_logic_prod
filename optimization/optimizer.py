@@ -58,8 +58,6 @@ class Optimizer:
             use_mode_priority: If True, prioritize target operation mode (COOL/HEAT) over FAN when selecting patterns.
                 If False (default), simply select the pattern with lowest power consumption.
         """
-        # Weather weights for block distance calculation
-        self.WEATHER_WEIGHTS = {"temperature": 1.0, "solar_radiation": 1.0}
         # AC Mode mapping: operation type string to numeric value
         self.OPERATION_TYPE_TO_MODE = {"COOL": 1, "HEAT": 2, "FAN": 3, "OFF": 0}
         # Whether to use zone operating hours for optimization (default: False)
@@ -352,6 +350,26 @@ class Optimizer:
 
         return filtered_days
 
+    def _get_weather_weights(self, hour: int) -> Dict[str, float]:
+        """
+        Get weather weights based on hour of the day.
+
+        For hours 17:00 to 6:00 (next day): temperature 1.0, solar_radiation 0.0
+        For other hours (7:00 to 16:59): temperature 0.7, solar_radiation 0.3
+
+        Args:
+            hour: Hour of the day (0-23)
+
+        Returns:
+            Dictionary with temperature and solar_radiation weights
+        """
+        # Hours 17:00 (17) to 6:00 (6) next day: use temperature only
+        if hour >= 17 or hour < 7:
+            return {"temperature": 1.0, "solar_radiation": 0.0}
+        # Hours 7:00 to 16:59: use both temperature and solar radiation
+        else:
+            return {"temperature": 0.7, "solar_radiation": 0.3}
+
     def _map_ac_mode(self, mode_value: int) -> str:
         """Map AC mode numeric value to string."""
         if not self.category_mappings or "A/C Mode" not in self.category_mappings:
@@ -413,7 +431,7 @@ class Optimizer:
             & (df["adjusted_power"] > 0)
             & df["Outdoor Temp."].notna()
             & df["Solar Radiation"].notna()
-            & (df["A/C ON/OFF"] > 0)  # Only AC ON status
+            # & (df["A/C ON/OFF"] > 0)  # Only AC ON status
         )
 
         df_filtered = df[valid_mask].copy()
@@ -499,10 +517,12 @@ class Optimizer:
             else 0
         )
 
+        # Get weather weights based on first hour of forecast day
+        forecast_first_hour = pd.to_datetime(forecast_day_data["datetime"].iloc[0]).hour
+        weather_weights = self._get_weather_weights(forecast_first_hour)
+        print("[similar days function] weather_weights", weather_weights)
         # Calculate day-level distance score (lower is better)
-        daily_hist["score"] = self.WEATHER_WEIGHTS["temperature"] * abs(
-            daily_hist["temp_z"] - forecast_temp_z
-        ) + self.WEATHER_WEIGHTS["solar_radiation"] * abs(
+        daily_hist["score"] = abs(daily_hist["temp_z"] - forecast_temp_z) + abs(
             daily_hist["solar_z"] - forecast_solar_z
         )
 
@@ -753,10 +773,16 @@ class Optimizer:
         else:
             solar_diff = abs(forecast_solar_mean - historical_solar_mean)
 
+        # Get weather weights based on first hour of forecast block
+        forecast_first_hour = pd.to_datetime(forecast_block["datetime"].iloc[0]).hour
+        weather_weights = self._get_weather_weights(forecast_first_hour)
+        print(
+            "[calculate_hour_block_distance function] weather_weights", weather_weights
+        )
         # Calculate weighted weather distance (lower is better)
         weather_distance = (
-            self.WEATHER_WEIGHTS["temperature"] * temp_diff
-            + self.WEATHER_WEIGHTS["solar_radiation"] * solar_diff
+            weather_weights["temperature"] * temp_diff
+            + weather_weights["solar_radiation"] * solar_diff
         )
 
         return weather_distance
