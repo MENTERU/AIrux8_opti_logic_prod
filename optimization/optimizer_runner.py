@@ -225,7 +225,7 @@ class OptimizerRunner:
             self.load_weather_data(start_date, end_date)
 
             # Run optimization
-            self.optimizer = Optimizer()
+            self.optimizer = Optimizer(store_name=self.store_name)
             result_df = self.optimizer.optimize_all_zones(
                 forecast_df=self.weather_data,
                 features_csv_path=self.features_csv_path,
@@ -399,13 +399,21 @@ class OptimizerRunner:
 
         print(f"[OptimizerRunner] Optimization results saved to: {output_logical_path}")
 
-        # Also upload to Google Drive
-        try:
-            self._upload_to_google_drive(self.results["optimization_result"], filename)
-        except Exception as error:
+        # Also upload to Google Drive (only when running on GCS/production)
+        backend = os.getenv("STORAGE_BACKEND", "local").lower()
+        if backend == "gcs":
+            try:
+                self._upload_to_google_drive(
+                    self.results["optimization_result"], filename
+                )
+            except Exception as error:
+                print(
+                    f"[OptimizerRunner] Warning: Failed to upload to Google Drive: {error}"
+                )
+                # Don't raise - we still want to return the storage path even if GDrive fails
+        else:
             print(
-                f"[OptimizerRunner] Warning: Failed to upload to Google Drive: {error}"
+                f"[OptimizerRunner] Skipping Google Drive upload (running locally with STORAGE_BACKEND={backend})"
             )
-            # Don't raise - we still want to return the storage path even if GDrive fails
 
         return output_logical_path

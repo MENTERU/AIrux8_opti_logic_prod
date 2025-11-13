@@ -40,8 +40,10 @@ class Optimizer:
     def __init__(
         self,
         use_operating_hours: bool = False,
-        hour_block_size: Optional[int] = 3,
+        hour_block_size: Optional[int] = 2,
         forecast_hour_range: Optional[Tuple[int, int]] = None,
+        store_name: Optional[str] = None,
+        use_mode_priority: bool = False,
     ):
         """
         Initialize the Optimizer with configuration.
@@ -52,9 +54,12 @@ class Optimizer:
                 Use None for whole day mode (24 hours). Can be any positive integer >= 2.
             forecast_hour_range: Optional tuple (start_hour, end_hour) for forecast filtering
                 (e.g., (8, 19) for 8 AM to 7 PM). If None, processes all 24 hours.
+            store_name: Store name (e.g., "Clea") for loading operation type mapping from master data
+            use_mode_priority: If True, prioritize target operation mode (COOL/HEAT) over FAN when selecting patterns.
+                If False (default), simply select the pattern with lowest power consumption.
         """
-        # Weather weights for block distance calculation
-        self.WEATHER_WEIGHTS = {"temperature": 0.7, "solar_radiation": 0.3}
+        # AC Mode mapping: operation type string to numeric value
+        self.OPERATION_TYPE_TO_MODE = {"COOL": 1, "HEAT": 2, "FAN": 3, "OFF": 0}
         # Whether to use zone operating hours for optimization (default: False)
         self.use_operating_hours = use_operating_hours
 
@@ -88,7 +93,17 @@ class Optimizer:
                 )
         self.forecast_hour_range = forecast_hour_range
 
+        # Store name for loading operation type mapping
+        self.store_name = store_name
+
+        # Whether to use mode priority when selecting patterns (eg. COOL/HEAT > FAN)
+        self.use_mode_priority = use_mode_priority
+
         self.category_mappings = self._load_category_mappings()
+        # Load operation type mapping if store_name is provided
+        self.operation_type_mapping = (
+            self._load_operation_type_mapping(store_name) if store_name else {}
+        )
 
     def _load_category_mappings(self) -> Dict:
         """Load category mappings from config file."""
@@ -102,6 +117,258 @@ class Optimizer:
         except Exception as e:
             logging.warning(f"Could not load category mappings: {e}")
             return {}
+
+    def _load_operation_type_mapping(
+        self, store_name: str
+    ) -> Dict[Tuple[str, int], str]:
+        """
+        Load operation type (運転区分) mapping from 制御マスタ sheet in Master Excel file.
+
+        Args:
+            store_name: Store name (e.g., "Clea")
+
+        Returns:
+            Dictionary mapping (zone_name, month_number) to operation type (e.g., "HEAT", "COOL")
+        """
+        try:
+            from service.storage import get_storage_client
+
+            storage_backend = os.getenv("STORAGE_BACKEND", "local").lower()
+            client = get_storage_client()
+
+            if storage_backend == "gcs":
+                excel_path = f"01_MasterData/MASTER_{store_name}.xlsx"
+            else:
+                master_dir = get_data_path("master_data_path")
+                excel_path = os.path.join(master_dir, f"MASTER_{store_name}.xlsx")
+
+            # Read 制御マスタ sheet
+            control_master_df = client.read_excel(excel_path, sheet_name="制御マスタ")
+
+            # Check if 運転区分 column exists
+            if "運転区分" not in control_master_df.columns:
+                logging.warning(
+                    f"運転区分 column not found in 制御マスタ sheet for {store_name}. "
+                    "Operation type filtering will be disabled."
+                )
+                return {}
+
+            # Create mapping: (zone_name, month_number) -> operation_type
+            operation_type_mapping = {}
+            for _, row in control_master_df.iterrows():
+                zone_name = row.get("制御区分")
+                month_str = row.get("月")
+                operation_type = row.get("運転区分")
+
+                if pd.isna(zone_name) or pd.isna(month_str) or pd.isna(operation_type):
+                    continue
+
+                # Convert month string (e.g., "1月") to integer
+                try:
+                    month_number = int(month_str.replace("月", ""))
+                    if 1 <= month_number <= 12:
+                        # Normalize operation type to uppercase for consistent comparison
+                        normalized_operation_type = str(operation_type).strip().upper()
+                        operation_type_mapping[(str(zone_name), month_number)] = (
+                            normalized_operation_type
+                        )
+                except (ValueError, AttributeError):
+                    continue
+
+            logging.info(
+                f"Loaded operation type mapping: {len(operation_type_mapping)} entries for {store_name}"
+            )
+            return operation_type_mapping
+
+        except Exception as e:
+            logging.warning(
+                f"Could not load operation type mapping for {store_name}: {e}. "
+                "Operation type filtering will be disabled."
+            )
+            return {}
+
+    def _get_forecast_operation_type(
+        self, forecast_day_data: pd.DataFrame, zone: str
+    ) -> Optional[str]:
+        """
+        Get operation type (運転区分) for the forecast day based on its month.
+
+        Args:
+            forecast_day_data: Forecast data for a single day
+            zone: Zone name to filter by
+
+        Returns:
+            Operation type string ("HEAT", "COOL", etc.) or None if not found
+        """
+        if not self.operation_type_mapping:
+            return None
+
+        try:
+            # Extract month from forecast day data
+            forecast_datetime = pd.to_datetime(forecast_day_data["datetime"].iloc[0])
+            forecast_month = forecast_datetime.month
+
+            # Look up operation type for (zone, month)
+            key = (zone, forecast_month)
+            operation_type = self.operation_type_mapping.get(key)
+
+            if operation_type:
+                logging.debug(
+                    f"Forecast day operation type for zone {zone}, month {forecast_month}: {operation_type}"
+                )
+            else:
+                logging.debug(
+                    f"No operation type found for zone {zone}, month {forecast_month}"
+                )
+
+            return operation_type
+
+        except Exception as e:
+            logging.warning(
+                f"Error getting forecast operation type for zone {zone}: {e}"
+            )
+            return None
+
+    def _get_allowed_ac_modes(self, operation_type: str) -> List[int]:
+        """
+        Get list of allowed AC Mode values for a given operation type.
+
+        Relaxed filtering rules:
+        - COOL: Allows COOL (1) and FAN (3), excludes HEAT (2)
+        - HEAT: Allows HEAT (2) and FAN (3), excludes COOL (1)
+        - FAN: Only FAN (3)
+        - OFF: Only OFF (0)
+
+        Args:
+            operation_type: Operation type string ("HEAT", "COOL", "FAN", "OFF")
+
+        Returns:
+            List of allowed AC Mode numeric values
+        """
+        if not operation_type:
+            return []
+
+        operation_type_upper = operation_type.upper()
+        target_mode = self.OPERATION_TYPE_TO_MODE.get(operation_type_upper)
+
+        if target_mode is None:
+            return []
+
+        # Relaxed filtering: COOL and HEAT also allow FAN mode
+        if operation_type_upper == "COOL":
+            return [
+                self.OPERATION_TYPE_TO_MODE["COOL"],
+                self.OPERATION_TYPE_TO_MODE["FAN"],
+            ]
+        elif operation_type_upper == "HEAT":
+            return [
+                self.OPERATION_TYPE_TO_MODE["HEAT"],
+                self.OPERATION_TYPE_TO_MODE["FAN"],
+            ]
+        else:
+            # For FAN or OFF, only allow the exact mode
+            return [target_mode]
+
+    def _filter_days_by_operation_type(
+        self,
+        historical_df: pd.DataFrame,
+        zone: str,
+        operation_type: str,
+        candidate_days: List[date],
+    ) -> List[date]:
+        """
+        Filter candidate days to only include days that have AC Mode matching the operation type.
+
+        Relaxed filtering: COOL allows both COOL and FAN modes, HEAT allows both HEAT and FAN modes.
+
+        Note: Days can be from ANY month - we only check that the historical day's AC Mode
+        matches the target operation type (e.g., if forecast is COOL, select days with COOL or FAN mode
+        regardless of which month they're from).
+
+        Uses vectorized operations for better performance with large candidate lists.
+
+        Args:
+            historical_df: Historical data DataFrame
+            zone: Zone name to filter by
+            operation_type: Target operation type (e.g., "HEAT", "COOL")
+            candidate_days: List of candidate Date objects to filter
+
+        Returns:
+            Filtered list of Date objects with AC Mode matching the operation type (relaxed)
+        """
+        if not operation_type:
+            # No filtering if operation type not available
+            return candidate_days
+
+        # Get allowed AC Mode values (relaxed: COOL allows FAN, HEAT allows FAN)
+        allowed_modes = self._get_allowed_ac_modes(operation_type)
+
+        if not allowed_modes:
+            logging.warning(
+                f"Unknown operation type {operation_type}, cannot filter by AC Mode"
+            )
+            return candidate_days
+
+        # Filter zone data once
+        zone_data = historical_df[historical_df["zone"] == zone].copy()
+        if "A/C Mode" not in zone_data.columns:
+            logging.warning(
+                f"A/C Mode column not found in historical data, cannot filter by AC Mode"
+            )
+            return candidate_days
+
+        # Filter to only candidate days first (vectorized operation)
+        candidate_days_set = set(candidate_days)
+        candidate_zone_data = zone_data[
+            zone_data["Date"].isin(candidate_days_set)
+        ].copy()
+
+        if len(candidate_zone_data) == 0:
+            # No data for any candidate days
+            return []
+
+        # Group by Date and check if any row has allowed AC Mode (vectorized with isin)
+        days_with_allowed_mode_set = set(
+            candidate_zone_data[candidate_zone_data["A/C Mode"].isin(allowed_modes)]
+            .groupby("Date")["Date"]
+            .first()
+            .index.tolist()
+        )
+
+        # Convert back to list of date objects, preserving order from candidate_days
+        # Using set for O(1) lookup instead of O(n) list lookup
+        filtered_days = [
+            day for day in candidate_days if day in days_with_allowed_mode_set
+        ]
+
+        if len(filtered_days) < len(candidate_days):
+            mode_names = [self._map_ac_mode(mode) for mode in allowed_modes]
+            logging.info(
+                f"Filtered {len(candidate_days)} candidate days to {len(filtered_days)} days "
+                f"with AC Mode matching operation type {operation_type} (allowed modes: {mode_names}) for zone {zone}"
+            )
+
+        return filtered_days
+
+    def _get_weather_weights(self, hour: int) -> Dict[str, float]:
+        """
+        Get weather weights based on hour of the day.
+
+        For hours 17:00 to 6:00 (next day): temperature 1.0, solar_radiation 0.0
+        For other hours (7:00 to 16:59): temperature 0.7, solar_radiation 0.3
+
+        Args:
+            hour: Hour of the day (0-23)
+
+        Returns:
+            Dictionary with temperature and solar_radiation weights
+        """
+        # Hours 17:00 (17) to 6:00 (6) next day: use temperature only
+        if hour >= 17 or hour < 7:
+            return {"temperature": 1.0, "solar_radiation": 0.0}
+        # Hours 7:00 to 16:59: use both temperature and solar radiation
+        else:
+            return {"temperature": 0.7, "solar_radiation": 0.3}
 
     def _map_ac_mode(self, mode_value: int) -> str:
         """Map AC mode numeric value to string."""
@@ -164,7 +431,7 @@ class Optimizer:
             & (df["adjusted_power"] > 0)
             & df["Outdoor Temp."].notna()
             & df["Solar Radiation"].notna()
-            & (df["A/C ON/OFF"] > 0)  # Only AC ON status
+            # & (df["A/C ON/OFF"] > 0)  # Only AC ON status
         )
 
         df_filtered = df[valid_mask].copy()
@@ -250,10 +517,12 @@ class Optimizer:
             else 0
         )
 
+        # Get weather weights based on first hour of forecast day
+        forecast_first_hour = pd.to_datetime(forecast_day_data["datetime"].iloc[0]).hour
+        weather_weights = self._get_weather_weights(forecast_first_hour)
+        print("[similar days function] weather_weights", weather_weights)
         # Calculate day-level distance score (lower is better)
-        daily_hist["score"] = self.WEATHER_WEIGHTS["temperature"] * abs(
-            daily_hist["temp_z"] - forecast_temp_z
-        ) + self.WEATHER_WEIGHTS["solar_radiation"] * abs(
+        daily_hist["score"] = abs(daily_hist["temp_z"] - forecast_temp_z) + abs(
             daily_hist["solar_z"] - forecast_solar_z
         )
 
@@ -295,6 +564,25 @@ class Optimizer:
 
         if len(zone_data) == 0 or "Date" not in zone_data.columns:
             return None, pd.DataFrame()
+
+        # Filter top_days by operation type if available
+        forecast_operation_type = self._get_forecast_operation_type(
+            forecast_day_data, zone
+        )
+        if forecast_operation_type:
+            filtered_top_days = self._filter_days_by_operation_type(
+                historical_df, zone, forecast_operation_type, top_days
+            )
+            if len(filtered_top_days) > 0:
+                top_days = filtered_top_days
+                logging.info(
+                    f"Zone {zone}: Filtered to {len(top_days)} days matching operation type {forecast_operation_type}"
+                )
+            else:
+                logging.warning(
+                    f"Zone {zone}: No days found matching operation type {forecast_operation_type}, "
+                    f"falling back to original {len(top_days)} candidate days"
+                )
 
         # Get forecast hours to match
         forecast_hours = pd.to_datetime(forecast_day_data["datetime"]).dt.hour.unique()
@@ -380,17 +668,63 @@ class Optimizer:
             best_day_patterns["hour"].isin(forecast_hours)
         ].copy()
 
-        # Reduce to one pattern per hour (lowest power pattern for each hour)
+        # Filter patterns by AC Mode to match operation type if available (relaxed filtering)
+        if forecast_operation_type and "A/C Mode" in best_day_patterns.columns:
+            # Get allowed AC Mode values (relaxed: COOL allows FAN, HEAT allows FAN)
+            allowed_modes = self._get_allowed_ac_modes(forecast_operation_type)
+
+            if allowed_modes:
+                # Only keep patterns with allowed AC Mode (vectorized with isin)
+                before_count = len(best_day_patterns)
+                best_day_patterns = best_day_patterns[
+                    best_day_patterns["A/C Mode"].isin(allowed_modes)
+                ].copy()
+                after_count = len(best_day_patterns)
+
+                if after_count < before_count:
+                    mode_names = [self._map_ac_mode(mode) for mode in allowed_modes]
+                    logging.info(
+                        f"Zone {zone}: Filtered patterns from {before_count} to {after_count} "
+                        f"matching operation type {forecast_operation_type} (allowed modes: {mode_names})"
+                    )
+
+        # Reduce to one pattern per hour (by default, lowest power; optionally prefer target mode)
         # This ensures the returned DataFrame has exactly one row per hour
         if len(best_day_patterns) == 0:
             return best_day, pd.DataFrame()
 
-        # Group by hour and select the row with lowest adjusted_power for each hour
-        best_day_patterns = (
-            best_day_patterns.sort_values("adjusted_power")
-            .groupby("hour", as_index=False)
-            .first()
-        )
+        # Sort patterns: by default, select lowest power
+        # If use_mode_priority is True, prefer target operation mode, then by lowest power
+        # For COOL: prefer COOL (1) over FAN (3), then by power
+        # For HEAT: prefer HEAT (2) over FAN (3), then by power
+        if (
+            self.use_mode_priority
+            and forecast_operation_type
+            and "A/C Mode" in best_day_patterns.columns
+        ):
+            target_mode = self.OPERATION_TYPE_TO_MODE.get(
+                forecast_operation_type.upper()
+            )
+            if target_mode is not None:
+                # Create priority: target mode = 0 (highest priority), others = 1
+                best_day_patterns = best_day_patterns.copy()
+                best_day_patterns["mode_priority"] = (
+                    best_day_patterns["A/C Mode"] != target_mode
+                ).astype(int)
+                # Sort by mode priority (target mode first), then by power
+                best_day_patterns = best_day_patterns.sort_values(
+                    ["mode_priority", "adjusted_power"]
+                )
+                best_day_patterns = best_day_patterns.drop(columns=["mode_priority"])
+            else:
+                # Fallback: sort by power only
+                best_day_patterns = best_day_patterns.sort_values("adjusted_power")
+        else:
+            # Default: sort by power only (lowest power first)
+            best_day_patterns = best_day_patterns.sort_values("adjusted_power")
+
+        # Group by hour and select the first row (preferred mode, then lowest power)
+        best_day_patterns = best_day_patterns.groupby("hour", as_index=False).first()
 
         return best_day, best_day_patterns
 
@@ -439,10 +773,16 @@ class Optimizer:
         else:
             solar_diff = abs(forecast_solar_mean - historical_solar_mean)
 
+        # Get weather weights based on first hour of forecast block
+        forecast_first_hour = pd.to_datetime(forecast_block["datetime"].iloc[0]).hour
+        weather_weights = self._get_weather_weights(forecast_first_hour)
+        print(
+            "[calculate_hour_block_distance function] weather_weights", weather_weights
+        )
         # Calculate weighted weather distance (lower is better)
         weather_distance = (
-            self.WEATHER_WEIGHTS["temperature"] * temp_diff
-            + self.WEATHER_WEIGHTS["solar_radiation"] * solar_diff
+            weather_weights["temperature"] * temp_diff
+            + weather_weights["solar_radiation"] * solar_diff
         )
 
         return weather_distance
@@ -481,6 +821,25 @@ class Optimizer:
 
         if len(zone_data) == 0 or "Date" not in zone_data.columns:
             return {}
+
+        # Filter top_days by operation type if available
+        forecast_operation_type = self._get_forecast_operation_type(
+            forecast_day_data, zone
+        )
+        if forecast_operation_type:
+            filtered_top_days = self._filter_days_by_operation_type(
+                historical_df, zone, forecast_operation_type, top_days
+            )
+            if len(filtered_top_days) > 0:
+                top_days = filtered_top_days
+                logging.info(
+                    f"Zone {zone}: Filtered to {len(top_days)} days matching operation type {forecast_operation_type}"
+                )
+            else:
+                logging.warning(
+                    f"Zone {zone}: No days found matching operation type {forecast_operation_type}, "
+                    f"falling back to original {len(top_days)} candidate days"
+                )
 
         # Optimize: Compute hour column once for all zone data
         zone_data["hour"] = zone_data["Datetime"].dt.hour
@@ -581,6 +940,20 @@ class Optimizer:
                 if len(candidate_block) == 0:
                     continue
 
+                # Filter by AC Mode to match operation type if available (relaxed filtering)
+                if forecast_operation_type and "A/C Mode" in candidate_block.columns:
+                    # Get allowed AC Mode values (relaxed: COOL allows FAN, HEAT allows FAN)
+                    allowed_modes = self._get_allowed_ac_modes(forecast_operation_type)
+
+                    if allowed_modes:
+                        # Only keep patterns with allowed AC Mode (vectorized with isin)
+                        candidate_block = candidate_block[
+                            candidate_block["A/C Mode"].isin(allowed_modes)
+                        ].copy()
+
+                        if len(candidate_block) == 0:
+                            continue
+
                 # Verify we have data for all required hours
                 candidate_hours = sorted(candidate_block["hour"].unique())
                 if set(candidate_hours) != set(hour_block):
@@ -638,9 +1011,51 @@ class Optimizer:
                         # Should not happen since we verified all hours exist, but defensive check
                         continue
 
-                    # If multiple rows for same hour, select lowest power
+                    # Filter by AC Mode to match operation type if available (relaxed filtering)
+                    if forecast_operation_type and "A/C Mode" in hist_rows.columns:
+                        # Get allowed AC Mode values (relaxed: COOL allows FAN, HEAT allows FAN)
+                        allowed_modes = self._get_allowed_ac_modes(
+                            forecast_operation_type
+                        )
+
+                        if allowed_modes:
+                            # Only keep patterns with allowed AC Mode (vectorized with isin)
+                            hist_rows = hist_rows[
+                                hist_rows["A/C Mode"].isin(allowed_modes)
+                            ]
+
+                            if len(hist_rows) == 0:
+                                # No matching AC Mode for this hour, skip it
+                                mode_names = [
+                                    self._map_ac_mode(mode) for mode in allowed_modes
+                                ]
+                                logging.debug(
+                                    f"Zone {zone}: No patterns with allowed AC Modes {mode_names} "
+                                    f"({forecast_operation_type}) for hour {forecast_hour}"
+                                )
+                                continue
+
+                    # If multiple rows for same hour, prefer target mode, then select lowest power
                     if len(hist_rows) > 1:
-                        hist_row = hist_rows.sort_values("adjusted_power").iloc[0]
+                        target_mode = None
+                        if forecast_operation_type:
+                            target_mode = self.OPERATION_TYPE_TO_MODE.get(
+                                forecast_operation_type.upper()
+                            )
+                        if target_mode is not None:
+                            # Sort: prefer target mode, then by power
+                            hist_rows = hist_rows.copy()
+                            hist_rows["mode_priority"] = (
+                                hist_rows["A/C Mode"] != target_mode
+                            ).astype(int)
+                            hist_rows = hist_rows.sort_values(
+                                ["mode_priority", "adjusted_power"]
+                            )
+                            # Select first row and drop the temporary priority column
+                            hist_row = hist_rows.iloc[0].drop("mode_priority")
+                        else:
+                            # Fallback: sort by power only
+                            hist_row = hist_rows.sort_values("adjusted_power").iloc[0]
                     else:
                         hist_row = hist_rows.iloc[0]
 
@@ -898,6 +1313,9 @@ class Optimizer:
             ["datetime", "zone"]
         ).reset_index(drop=True)
 
+        # Post-process results: replace COOL/HEAT with OFF status to FAN with AUTO
+        combined_results = self._post_process_results(combined_results)
+
         print(f"\n=== 最適化サマリー ===")
         print(f"合計結果: {len(combined_results)}時間")
         for zone in zones:
@@ -908,6 +1326,57 @@ class Optimizer:
         wide_df = self._convert_to_wide_format(combined_results)
 
         return wide_df
+
+    def _post_process_results(self, results_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Post-process optimization results to replace COOL/HEAT with OFF status
+        with FAN mode, AUTO fan speed, and zero power.
+
+        This ensures that if a COOL or HEAT mode is selected but AC is OFF,
+        it is replaced with FAN mode (AUTO fan speed) with zero power consumption.
+
+        Args:
+            results_df: Long format DataFrame with optimization results
+
+        Returns:
+            Post-processed DataFrame with corrections applied
+        """
+        if results_df.empty:
+            return results_df
+
+        # Create a copy to avoid modifying the original
+        processed_df = results_df.copy()
+
+        # Identify rows where mode is COOL or HEAT AND status is OFF
+        # Check both ac_on_off == "OFF" and numb_units_on == 0 or None
+        is_cool_or_heat = processed_df["mode"].isin(["COOL", "HEAT"])
+        is_off_status = (
+            (processed_df["ac_on_off"] == "OFF")
+            | (processed_df["numb_units_on"] == 0)
+            | (processed_df["numb_units_on"].isna())
+        )
+
+        # Find rows that need correction
+        needs_correction = is_cool_or_heat & is_off_status
+
+        if needs_correction.any():
+            correction_count = needs_correction.sum()
+            logging.info(
+                f"Post-processing: Replacing {correction_count} COOL/HEAT with OFF status "
+                "to FAN mode with AUTO fan speed and zero power"
+            )
+
+            # Apply corrections using vectorized operations
+            processed_df.loc[needs_correction, "mode"] = "FAN"
+            processed_df.loc[needs_correction, "fan_speed"] = "AUTO"
+            processed_df.loc[needs_correction, "power"] = 0.0
+
+            # Log zone-wise statistics
+            zone_stats = processed_df[needs_correction].groupby("zone").size().to_dict()
+            for zone, count in zone_stats.items():
+                logging.debug(f"  Zone {zone}: {count} corrections applied")
+
+        return processed_df
 
     def _convert_to_wide_format(self, long_df: pd.DataFrame) -> pd.DataFrame:
         """
