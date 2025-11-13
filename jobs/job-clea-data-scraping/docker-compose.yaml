@@ -11,10 +11,9 @@ services:
       - .:/app
       - job-clea-venv:/app/.venv
     working_dir: /app
-    # Development: use --reload for auto-restart on file changes
-    command: uv run uvicorn main:app --host=0.0.0.0 --port=8080 --reload
-    # Production: remove --reload to prevent auto-restarts
-    # command: uv run uvicorn main:app --host=0.0.0.0 --port=8080
+    # Runs main.py directly (same as Cloud Run Jobs)
+    # Remove this line if you want to use the default CMD from Dockerfile
+    # command: uv run python main.py
 
     networks:
       - menteru-net

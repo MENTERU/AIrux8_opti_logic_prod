@@ -25,4 +25,5 @@ dependencies = [
     "uvicorn[standard]>=0.30.0",
     "xgboost>=3.0.5",
     "playwright>=1.40.0",
+    "pytz>=2025.2",
 ]

@@ -36,11 +36,12 @@ RUN uv run playwright install chromium && \
 # Copy the application code (this layer will be rebuilt if code changes)
 COPY . .
 
-# Expose the port
+# Expose the port (for local development with docker-compose)
 EXPOSE 8080
 
-# Run the FastAPI application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+# Default CMD for Cloud Run Jobs (runs scraping directly)
+# For local development, docker-compose will override this with uvicorn
+CMD ["uv", "run", "python", "main.py"]
 
 
 
