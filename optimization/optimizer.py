@@ -1313,6 +1313,9 @@ class Optimizer:
             ["datetime", "zone"]
         ).reset_index(drop=True)
 
+        # Post-process results: replace COOL/HEAT with OFF status to FAN with AUTO
+        combined_results = self._post_process_results(combined_results)
+
         print(f"\n=== 最適化サマリー ===")
         print(f"合計結果: {len(combined_results)}時間")
         for zone in zones:
@@ -1323,6 +1326,57 @@ class Optimizer:
         wide_df = self._convert_to_wide_format(combined_results)
 
         return wide_df
+
+    def _post_process_results(self, results_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Post-process optimization results to replace COOL/HEAT with OFF status
+        with FAN mode, AUTO fan speed, and zero power.
+
+        This ensures that if a COOL or HEAT mode is selected but AC is OFF,
+        it is replaced with FAN mode (AUTO fan speed) with zero power consumption.
+
+        Args:
+            results_df: Long format DataFrame with optimization results
+
+        Returns:
+            Post-processed DataFrame with corrections applied
+        """
+        if results_df.empty:
+            return results_df
+
+        # Create a copy to avoid modifying the original
+        processed_df = results_df.copy()
+
+        # Identify rows where mode is COOL or HEAT AND status is OFF
+        # Check both ac_on_off == "OFF" and numb_units_on == 0 or None
+        is_cool_or_heat = processed_df["mode"].isin(["COOL", "HEAT"])
+        is_off_status = (
+            (processed_df["ac_on_off"] == "OFF")
+            | (processed_df["numb_units_on"] == 0)
+            | (processed_df["numb_units_on"].isna())
+        )
+
+        # Find rows that need correction
+        needs_correction = is_cool_or_heat & is_off_status
+
+        if needs_correction.any():
+            correction_count = needs_correction.sum()
+            logging.info(
+                f"Post-processing: Replacing {correction_count} COOL/HEAT with OFF status "
+                "to FAN mode with AUTO fan speed and zero power"
+            )
+
+            # Apply corrections using vectorized operations
+            processed_df.loc[needs_correction, "mode"] = "FAN"
+            processed_df.loc[needs_correction, "fan_speed"] = "AUTO"
+            processed_df.loc[needs_correction, "power"] = 0.0
+
+            # Log zone-wise statistics
+            zone_stats = processed_df[needs_correction].groupby("zone").size().to_dict()
+            for zone, count in zone_stats.items():
+                logging.debug(f"  Zone {zone}: {count} corrections applied")
+
+        return processed_df
 
     def _convert_to_wide_format(self, long_df: pd.DataFrame) -> pd.DataFrame:
         """
