@@ -195,7 +195,7 @@ def main():
     print("obs_space   :", single_env.observation_space)
 
     # ====== 学習設定 ======
-    max_epoch = 10
+    max_epoch = 20
     step_per_epoch = trainer_cfg["step_per_epoch"]
     step_per_collect = trainer_cfg["step_per_collect"]
     repeat_per_collect = trainer_cfg["repeat_per_collect"]

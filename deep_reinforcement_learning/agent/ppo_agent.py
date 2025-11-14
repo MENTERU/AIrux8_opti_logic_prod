@@ -352,7 +352,7 @@ def create_ppo_for_hvac(
     set_on_off_list: Sequence,  # 例: ["OFF","ON"] もしくは [0,1]
     n_devices: int,
     *,
-    actor_hidden=(256, 128),
+    actor_hidden=(256, 256),
     critic_hidden=(512, 256),
     **ppo_kwargs,
 ):
