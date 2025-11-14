@@ -339,13 +339,9 @@ class AirControlEnv(gym.Env):
             info_pred = {f"pred__{c}": float(pred_row[c]) for c in pred_cols}
         except Exception:
             info_pred = {}
-        # 状態更新（DPに実績として取り込み、時間を+1h）
-        self.update_state(pred_df)
-
         # 次観測の生成（最新 self.base_df は env 側で持っている想定）
         # ここでは dp_builder の内部状態を進めただけなので、obs は pred_df ではなく base_df の末尾から作る
         obs, info = self._extract_obs_info(env_df)
-
         # 追加情報
         info.update(rinfo)
         info["time"] = self.current_time
@@ -354,7 +350,8 @@ class AirControlEnv(gym.Env):
         # 終了判定
         terminated = bool(self.current_time >= self.end_term)
         truncated = False
-
+        # 状態更新（DPに実績として取り込み、時間を+1h）
+        self.update_state(pred_df)
         return obs, reward, terminated, truncated, info
 
     def update_state(self, pred_df):

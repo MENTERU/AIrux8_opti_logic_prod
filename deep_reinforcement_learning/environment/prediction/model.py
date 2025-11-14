@@ -1,4 +1,5 @@
 # ==== 安定保存・復元（完全差し替え） =========================================
+# ==== 安定保存・復元（完全差し替え） =========================================
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -158,17 +159,16 @@ def _predict_with_best_iter(
     """Xf は DataFrame 推奨。やむを得ず ndarray の場合は feature_names を必ず渡す。"""
     booster = _booster_from_any(est)
     if booster is None:
-        # Booster 取れない場合のフォールバック
-        return est.predict(Xf if not hasattr(Xf, "to_numpy") else Xf.to_numpy())
+        # Booster 取れない場合のフォールバック：
+        # Xf が DataFrame なら DataFrame のまま渡す（to_numpyしない！）
+        return est.predict(Xf)
 
-    # --- DMatrix を「列名つき」で作るのが超重要 ---
+    # --- ここから下はそのまま ---
     if isinstance(Xf, pd.DataFrame):
-        # 列名は DataFrame から自動で拾われる
         dmat = xgb.DMatrix(Xf)
     else:
-        # ndarray の場合は booster 側の feature_names を必ず渡す
         bn = getattr(booster, "feature_names", None)
-        use_names = feature_names or bn  # どちらかが必須
+        use_names = feature_names or bn
         dmat = xgb.DMatrix(np.asarray(Xf), feature_names=use_names)
 
     best_it = _best_iteration_from_booster(booster)
@@ -209,23 +209,28 @@ def load_residual_model(path: str) -> ResidualRuntime:
     return ResidualRuntime(estimators=ests, y_cols=y_cols, x_cols=x_cols)
 
 
-# --- 残差モデルの全期間予測（元スケール復元つき） ---
 def predict_full_period_with_residual_model(
     model: Any,
     X_full: pd.DataFrame,
     *,
     model_target_names: Sequence[str],  # 学習時 Y.columns の並び（必須）
     wanted_target_cols: Optional[Sequence[str]] = None,  # 返したい列（省略で全列）
-    bl_prefix: str = "bl__",
-    add_back_baseline: bool = True,
-    fill_missing_baseline: float = 0.0,
+    bl_prefix: str = "bl__",  # ← 互換性のために残すが使わない
+    add_back_baseline: bool = True,  # ← 無視
+    fill_missing_baseline: float = 0.0,  # ← 無視
     coerce_numeric: bool = True,
 ) -> dict:
     """
-    残差モデル（Y_res = Y - BL）で全期間を予測。
-    - model_target_names: 学習時ターゲット列名の順序（predict の列順と一致させる）
+    （※今は残差を使わない）通常の X -> Y モデルで全期間を予測する。
+
+    - model_target_names: 学習時ターゲット列名の順序（predict の列順と一致）
     - wanted_target_cols: 返却したい列（例: ["total_kwh__49-9"]）。None なら全列。
-    戻り値: {"y_res_pred": DataFrame, "y_pred": DataFrame(任意)}
+
+    戻り値:
+        {
+            "y_pred": DataFrame,      # 予測された Y（元スケール）
+            "y_res_pred": DataFrame,  # 互換用。中身は y_pred と同じ。
+        }
     """
     if not model_target_names:
         raise ValueError("model_target_names を渡してください。")
@@ -235,57 +240,46 @@ def predict_full_period_with_residual_model(
     if coerce_numeric:
         Xf = Xf.apply(pd.to_numeric, errors="coerce").fillna(0.0)
 
-    # 予測（残差）: 保存読込後のランタイム or 直後モデルの両対応
+    # 予測: 保存読込後のランタイム or 学習直後モデルの両対応
     if isinstance(model, ResidualRuntime):
         # 列順はランタイム内で x_cols に揃う
-        y_res_np = model.predict(Xf)
+        y_np = model.predict(Xf)
     else:
-        # 学習直後のモデル（feature_names_in_ / _x_cols に合わせる）
+        # 学習直後のモデル（_x_cols / feature_names_in_ に合わせる）
         if hasattr(model, "_x_cols"):
             X_used = Xf.reindex(columns=list(model._x_cols), fill_value=0.0)
         elif hasattr(model, "feature_names_in_"):
             X_used = Xf.reindex(columns=list(model.feature_names_in_), fill_value=0.0)
         else:
             X_used = Xf
-        y_res_np = _predict_with_best_iter(model, X_used)
-        if y_res_np.ndim == 1:
-            y_res_np = y_res_np.reshape(-1, 1)
+
+        y_np = _predict_with_best_iter(model, X_used)
+        if y_np.ndim == 1:
+            y_np = y_np.reshape(-1, 1)
 
     # 出力次元チェック
-    if y_res_np.ndim == 1:
-        y_res_np = y_res_np.reshape(-1, 1)
-    if y_res_np.shape[1] != len(model_target_names):
+    if y_np.ndim == 1:
+        y_np = y_np.reshape(-1, 1)
+    if y_np.shape[1] != len(model_target_names):
         raise ValueError(
-            f"モデル出力数({y_res_np.shape[1]})と model_target_names({len(model_target_names)}) が不一致です。"
+            f"モデル出力数({y_np.shape[1]})と model_target_names({len(model_target_names)}) が不一致です。"
         )
 
     # DataFrame 化（全ターゲット）
-    # 列名は常に 「学習時の並び model_target_names」に揃える
-    y_res_all = pd.DataFrame(y_res_np, index=Xf.index, columns=list(model_target_names))
+    y_all = pd.DataFrame(y_np, index=Xf.index, columns=list(model_target_names))
 
     # 必要列だけ選択
     if wanted_target_cols is None:
-        y_res_pred = y_res_all
-        used_targets = list(model_target_names)
+        y_pred = y_all
     else:
-        missing = [c for c in wanted_target_cols if c not in y_res_all.columns]
+        missing = [c for c in wanted_target_cols if c not in y_all.columns]
         if missing:
             raise KeyError(f"wanted_target_cols に未知列があります: {missing}")
-        y_res_pred = y_res_all.loc[:, list(wanted_target_cols)]
-        used_targets = list(wanted_target_cols)
+        y_pred = y_all.loc[:, list(wanted_target_cols)]
 
-    out = {"y_res_pred": y_res_pred}
-
-    # 元スケールへ戻す（Y = Y_res + BL）
-    if add_back_baseline:
-        bl_df = pd.DataFrame(index=Xf.index, columns=used_targets, dtype=float)
-        for col in used_targets:
-            bl_col = bl_prefix + col
-            if bl_col in Xf.columns:
-                bl_df[col] = pd.to_numeric(Xf[bl_col], errors="coerce")
-            else:
-                bl_df[col] = float(fill_missing_baseline)
-        bl_df = bl_df.fillna(fill_missing_baseline)
-        out["y_pred"] = y_res_pred.add(bl_df, fill_value=0.0)
-
+    # ここでは baseline を足し戻さない（既に元スケールの Y を直接予測している前提）
+    # 互換性のために y_res_pred も同じ中身で返す
+    out = {
+        "y_pred": y_pred,
+    }
     return out

@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import deque
-from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Deque, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -35,51 +34,6 @@ def make_time_features(index: pd.DatetimeIndex) -> pd.DataFrame:
 
 def pick_cols(df: pd.DataFrame, prefix: str) -> list[str]:
     return [c for c in df.columns if c.startswith(prefix)]
-
-
-# ========= レガシー版: 週平均BL + 残差ラグ（互換用） =========
-
-
-def compute_same_time_baseline(
-    df: pd.DataFrame,
-    cols: Iterable[str],
-    *,
-    days: int = 7,
-    fallback: float = 0.0,
-) -> pd.DataFrame:
-    df = _ensure_dtindex(df)
-    cols = list(cols)
-    shifted_list = [
-        df[cols].shift(freq=pd.Timedelta(days=k)) for k in range(1, days + 1)
-    ]
-    sum_vals, count_vals = None, None
-    for s in shifted_list:
-        sum_vals = s if sum_vals is None else sum_vals.add(s, fill_value=0.0)
-        c = s.notna().astype(int)
-        count_vals = c if count_vals is None else count_vals.add(c, fill_value=0)
-    baseline = sum_vals.divide(count_vals).where(count_vals > 0, other=float(fallback))
-    return baseline
-
-
-def add_baseline_and_residual(
-    df: pd.DataFrame,
-    cols: Iterable[str],
-    *,
-    days: int = 7,
-    fallback: float = 0.0,
-    bl_prefix: str = "bl__",
-    res_prefix: str = "res__",
-    include_original: bool = True,
-) -> pd.DataFrame:
-    cols = list(cols)
-    bl = compute_same_time_baseline(df, cols, days=days, fallback=fallback)
-    res = df[cols] - bl
-    out = pd.DataFrame(index=df.index)
-    if include_original:
-        out[cols] = df[cols]
-    out[[f"{bl_prefix}{c}" for c in cols]] = bl
-    out[[f"{res_prefix}{c}" for c in cols]] = res
-    return out
 
 
 def add_lagged_features(
@@ -114,101 +68,6 @@ def _cut_head_for_baseline_and_lag(
         + pd.Timedelta(hours=max_lag_h)
     )
     return index[index >= cut_point]
-
-
-def build_features_residualized(
-    base_df: pd.DataFrame,
-    *,
-    indoor_prefix="Indoor Temp.__",
-    setT_prefix="A/C Set Temperature__",
-    mode_prefix="A/C Mode__",
-    wind_prefix="A/C Fan Speed__",
-    onoff_prefix="A/C ON/OFF__",
-    weather_cols: Optional[Iterable[str]] = None,
-    include_weather_raw: bool = False,
-    days_for_baseline: int = 7,
-    baseline_fallback: float = 0.0,
-    include_original_controls: bool = True,
-    lags_hours=[1],
-    use_freq_shift=False,
-    drop_initial_window=True,
-) -> pd.DataFrame:
-    """
-    既存互換のレガシー出力（「同時刻・過去N日平均」+ 残差ラグ）を返す。
-    ※ make_input_data のカラム規約と一致
-    """
-    df = _ensure_dtindex(base_df)
-    original_index = df.index
-    parts: list[pd.DataFrame] = []
-
-    # 1) 時間特徴
-    tf = make_time_features(original_index)
-    if not isinstance(tf.index, pd.DatetimeIndex):
-        tf = tf.set_index(original_index)
-    parts.append(tf.reindex(original_index))
-
-    # 2) 室内温度: BL + 残差ラグ（列名は indoor_temp__* に統一）
-    indoor_cols_raw = pick_cols(df, indoor_prefix)
-    if indoor_cols_raw:
-        tmp_in = df[indoor_cols_raw].copy()
-        rename_in = {
-            c: c.replace(indoor_prefix, "indoor_temp__") for c in indoor_cols_raw
-        }
-        tmp_in.rename(columns=rename_in, inplace=True)
-
-        bl_in = compute_same_time_baseline(
-            tmp_in, tmp_in.columns, days=days_for_baseline, fallback=baseline_fallback
-        ).reindex(original_index)
-        parts.append(bl_in.add_prefix("bl__").reindex(original_index))
-
-        res_in = (tmp_in.reindex(original_index) - bl_in).add_prefix("res__")
-        lag_res_in = add_lagged_features(
-            res_in, res_in.columns, lags_hours=lags_hours, use_freq_shift=use_freq_shift
-        ).reindex(original_index)
-        parts.append(lag_res_in)
-
-    # 3) 室外機 kWh: BL + 残差ラグ
-    odu_cols = pick_cols(df, "total_kwh__")
-    if odu_cols:
-        bl_odu = compute_same_time_baseline(
-            df, odu_cols, days=days_for_baseline, fallback=baseline_fallback
-        ).reindex(original_index)
-        parts.append(bl_odu.add_prefix("bl__").reindex(original_index))
-
-        raw_odu = df[odu_cols].reindex(original_index)
-        res_odu = (raw_odu - bl_odu).add_prefix("res__")
-        lag_res_odu = add_lagged_features(
-            res_odu,
-            res_odu.columns,
-            lags_hours=lags_hours,
-            use_freq_shift=use_freq_shift,
-        ).reindex(original_index)
-        parts.append(lag_res_odu)
-
-    # 4) 天気（元値）
-    if include_weather_raw:
-        if weather_cols is None:
-            candidates = ["Outdoor Temp.", "Outdoor Humidity", "Solar Radiation"]
-            weather_cols = [c for c in candidates if c in df.columns]
-        if weather_cols:
-            parts.append(df[list(weather_cols)].copy().reindex(original_index))
-
-    # 5) 操作量（元値）
-    if include_original_controls:
-        control_cols: list[str] = []
-        for p in (setT_prefix, mode_prefix, wind_prefix, onoff_prefix):
-            control_cols += pick_cols(df, p)
-        if control_cols:
-            parts.append(df[control_cols].copy().reindex(original_index))
-
-    X = pd.concat(parts, axis=1).reindex(original_index)
-    if drop_initial_window:
-        kept_index = _cut_head_for_baseline_and_lag(
-            original_index, days_for_baseline, lags_hours
-        )
-        X = X.loc[kept_index]
-    X = X.apply(pd.to_numeric, errors="coerce").fillna(0.0)
-    return X
 
 
 # ========= 列名 正規化/並べ替え（ビルダー互換のため） =========
@@ -327,18 +186,220 @@ def _order_columns_like_builder(
     return ordered + tail
 
 
-# ========= DP法：同時刻BL + 残差ラグ（オンライン） =========
+# ========= 制御から Duration / Diff1h を作る =========
 
 
-@dataclass
-class _SlotState:
-    buf: np.ndarray
-    ptr: int
-    sums: np.ndarray
-    counts: np.ndarray
+def add_control_derived_features(
+    base_df: pd.DataFrame,
+    *,
+    setT_prefix: str = "A/C Set Temperature__",
+    mode_prefix: str = "A/C Mode__",
+    wind_prefix: str = "A/C Fan Speed__",
+    onoff_prefix: str = "A/C ON/OFF__",
+) -> pd.DataFrame:
+    """
+    base_df に以下の特徴量を追加して返す:
+      - 各室内機ごとに
+        * Duration_ON__{unit}  : ON になってからの連続稼働時間 [ステップ数]
+        * Duration_OFF__{unit} : OFF になってからの連続停止時間 [ステップ数]
+        * Duration_Mode__{unit}: Mode が現在値のまま続いている時間 [ステップ数]
+        * Duration_Fan__{unit} : Fan が現在値のまま続いている時間 [ステップ数]
+        * Diff1h_SetT__{unit}  : 設定温度の 1時間差分 (現在 - 1時間前)
+    """
+    df = base_df.copy()
+    new_cols: Dict[str, pd.Series] = {}
+
+    # ---- ON/OFF 由来 (ON/OFF 継続時間) ----
+    onoff_cols = pick_cols(df, onoff_prefix)
+    for col in onoff_cols:
+        unit = col.replace(onoff_prefix, "")  # 例: "A-25" など
+        s = df[col]
+
+        # 0/1 の ON フラグに正規化
+        if s.dtype == object:
+            on = s.astype(str).str.upper().map({"ON": 1, "OFF": 0})
+        else:
+            on = pd.to_numeric(s, errors="coerce").fillna(0).astype(int)
+        on = (on > 0).astype(int)
+        off = 1 - on
+
+        # --- ON 連続時間 ---
+        grp_on = (on.ne(on.shift()) & on.eq(1)).cumsum()
+        on_runtime = on.groupby(grp_on).cumsum()
+        on_runtime = on_runtime.where(on == 1, 0)
+        new_cols[f"Duration_ON__{unit}"] = on_runtime
+
+        # --- OFF 連続時間 ---
+        grp_off = (off.ne(off.shift()) & off.eq(1)).cumsum()
+        off_runtime = off.groupby(grp_off).cumsum()
+        off_runtime = off_runtime.where(off == 1, 0)
+        new_cols[f"Duration_OFF__{unit}"] = off_runtime
+
+    # ---- Mode 由来 (同一モード継続時間) ----
+    mode_cols = pick_cols(df, mode_prefix)
+    for col in mode_cols:
+        unit = col.replace(mode_prefix, "")
+        val = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+        grp = val.ne(val.shift()).cumsum()
+        duration = pd.Series(1, index=df.index).groupby(grp).cumsum()
+        new_cols[f"Duration_Mode__{unit}"] = duration
+
+    # ---- Fan 由来 (同一風量継続時間) ----
+    wind_cols = pick_cols(df, wind_prefix)
+    for col in wind_cols:
+        unit = col.replace(wind_prefix, "")
+        val = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+        grp = val.ne(val.shift()).cumsum()
+        duration = pd.Series(1, index=df.index).groupby(grp).cumsum()
+        new_cols[f"Duration_Fan__{unit}"] = duration
+
+    # ---- 設定温度の 1時間差分 ----
+    setT_cols = pick_cols(df, setT_prefix)
+    for col in setT_cols:
+        unit = col.replace(setT_prefix, "")
+        temp = pd.to_numeric(df[col], errors="coerce")
+        diff = (temp - temp.shift(1)).fillna(0.0)
+        new_cols[f"Diff1h_SetT__{unit}"] = diff
+
+    # まとめて結合（断片化を避ける）
+    if new_cols:
+        new_df = pd.DataFrame(new_cols, index=df.index)
+        df = pd.concat([df, new_df], axis=1)
+
+    return df
+
+
+# ========= オフライン用: X を構築 =========
+
+
+def build_features_residualized(
+    base_df: pd.DataFrame,
+    *,
+    indoor_prefix="Indoor Temp.__",
+    setT_prefix="A/C Set Temperature__",
+    mode_prefix="A/C Mode__",
+    wind_prefix="A/C Fan Speed__",
+    onoff_prefix="A/C ON/OFF__",
+    weather_cols: Optional[
+        Iterable[str]
+    ] = None,  # 例: ["Outdoor Temp.", "Outdoor Humidity", "Solar Radiation"]
+    include_weather_raw: bool = False,  # 天気は“元値のみ”入れるか
+    days_for_baseline: int = 8,  # 今は「初期ウィンドウを落とす」ためだけに使用
+    baseline_fallback: float = 0.0,  # 未使用（互換のため残し）
+    include_original_controls: bool = True,
+    lags_hours=[1],
+    use_freq_shift=False,
+    drop_initial_window=True,
+) -> pd.DataFrame:
+    """
+    X = [時間特徴]
+        + [室内温度ラグ (indoor_temp__*, lag{h}h__…)]
+        + [天気: 生値のみ（オプション）]
+        + [操作量（原値 + Duration + Diff1h）]
+    """
+    # index 整備
+    df = _ensure_dtindex(base_df)
+
+    # 制御値からの派生特徴量を追加
+    df = add_control_derived_features(
+        df,
+        setT_prefix=setT_prefix,
+        mode_prefix=mode_prefix,
+        wind_prefix=wind_prefix,
+        onoff_prefix=onoff_prefix,
+    )
+
+    original_index = df.index
+    parts: list[pd.DataFrame] = []
+
+    # 1) 時間特徴
+    tf = make_time_features(original_index)
+    if not isinstance(tf.index, pd.DatetimeIndex):
+        tf = tf.set_index(original_index)
+    parts.append(tf.reindex(original_index))
+
+    # 2) 室内温度: ラグのみ
+    indoor_cols_raw = pick_cols(df, indoor_prefix)
+    if indoor_cols_raw:
+        tmp_in = df[indoor_cols_raw].copy()
+        rename_in = {
+            c: c.replace(indoor_prefix, "indoor_temp__") for c in indoor_cols_raw
+        }
+        tmp_in.rename(columns=rename_in, inplace=True)
+
+        indoor_out_cols = list(tmp_in.columns)
+
+        lag_temp = add_lagged_features(
+            tmp_in,
+            indoor_out_cols,
+            lags_hours=lags_hours,
+            use_freq_shift=use_freq_shift,
+            prefix_fmt="lag{h}h__",
+        ).reindex(original_index)
+
+        parts.append(lag_temp)
+
+    # 3) 天気: 生値のみ
+    if include_weather_raw:
+        if weather_cols is None:
+            candidates = ["Outdoor Temp.", "Outdoor Humidity", "Solar Radiation"]
+            weather_cols = [c for c in candidates if c in df.columns]
+        if weather_cols:
+            parts.append(df[list(weather_cols)].copy().reindex(original_index))
+
+    # 4) 操作量（原値 + 派生特徴）
+    if include_original_controls:
+        control_cols: list[str] = []
+
+        control_prefixes = [
+            setT_prefix,
+            mode_prefix,
+            wind_prefix,
+            onoff_prefix,
+        ]
+        derived_prefixes = [
+            "Duration_ON__",
+            "Duration_OFF__",
+            "Duration_Mode__",
+            "Duration_Fan__",
+            "Diff1h_SetT__",
+        ]
+
+        for p in control_prefixes + derived_prefixes:
+            control_cols += pick_cols(df, p)
+
+        if control_cols:
+            parts.append(df[control_cols].copy().reindex(original_index))
+
+    # 結合（行は落とさない）
+    X = pd.concat(parts, axis=1)
+    X = X.reindex(original_index)
+
+    if drop_initial_window:
+        kept_index = _cut_head_for_baseline_and_lag(
+            original_index, days_for_baseline, lags_hours
+        )
+        X = X.loc[kept_index]
+
+    X = X.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    return X
+
+
+# =========================================
+# ラグ専用 DP
+# =========================================
 
 
 class _SameTimeDP:
+    """
+    - baseline / residual は持たず、
+    - cols に対してラグ特徴だけを出すクラス。
+      use_freq_shift=False → 行ベースのラグ（shift(n行)）
+      use_freq_shift=True  → 時刻ベースで t-h 時間前を raw_by_ts から取る
+    """
+
     def __init__(
         self,
         cols: List[str],
@@ -349,195 +410,168 @@ class _SameTimeDP:
         use_freq_shift: bool,
         lag_prefix_fmt: str,
     ):
-        self.cols = list(cols)  # "indoor_temp.__X" / "total_kwh__Y"
+        self.cols = list(cols)  # 例: "indoor_temp__A-25", "total_kwh__A-25"
         self.col_index: Dict[str, int] = {c: i for i, c in enumerate(self.cols)}
         self.n = len(self.cols)
+
+        # days / fallback は旧設計との互換のため保持しているが、
+        # ここではラグ専用なので実質未使用。
         self.days = int(days)
         self.fallback = float(fallback)
+
         self.lags = sorted(set(int(h) for h in (lags_hours or [])))
         self.max_lag = max(self.lags) if self.lags else 0
         self.use_freq_shift = bool(use_freq_shift)
         self.lag_prefix_fmt = lag_prefix_fmt
-        self.slots: Dict[Tuple[int, int, int], _SlotState] = {}
-        self.res_row_hist: deque[np.ndarray] = deque(
-            maxlen=self.max_lag if not self.use_freq_shift else 1
-        )
+
+        # 履歴
         self.raw_by_ts: Dict[pd.Timestamp, np.ndarray] = {}
-        self.res_by_ts: Dict[pd.Timestamp, np.ndarray] = {}
-
-    def _baseline_exact_by_days(self, ts: pd.Timestamp) -> np.ndarray:
-        """★ ちょうど k 日前 (k=1..days) の同一時刻だけを平均（NaN 除外, 無ければ fallback）"""
-        out = np.full(self.n, self.fallback, float)
-        s = np.zeros(self.n, float)
-        c = np.zeros(self.n, dtype=np.int64)
-
-        # tz付きなら naive化（壁時計時刻を維持）
-        t = ts.tz_convert(None) if ts.tz is not None else ts
-
-        for k in range(1, self.days + 1):
-            prev_ts = t - pd.Timedelta(days=k)
-            v = self.raw_by_ts.get(prev_ts)
-            if v is None:
-                continue
-            mask = ~np.isnan(v)
-            s[mask] += v[mask]
-            c[mask] += 1
-
-        valid = c > 0
-        out[valid] = s[valid] / c[valid]
-        return out
-
-    def _slot_key(self, ts: pd.Timestamp) -> Tuple[int, int, int]:
-        t = ts.tz_convert(None) if ts.tz is not None else ts
-        return (t.hour, t.minute, t.second)
-
-    def _get_slot(self, ts: pd.Timestamp) -> _SlotState:
-        key = self._slot_key(ts)
-        st = self.slots.get(key)
-        if st is None:
-            buf = np.full((self.days, self.n), np.nan, float)
-            st = _SlotState(
-                buf=buf,
-                ptr=0,
-                sums=np.zeros(self.n, float),
-                counts=np.zeros(self.n, dtype=np.int64),
+        if not self.use_freq_shift:
+            # 行ベースラグ用：単純に直近 max_lag 行分だけ保持
+            self.row_hist: Deque[np.ndarray] = deque(
+                maxlen=self.max_lag if self.max_lag > 0 else None
             )
-            self.slots[key] = st
-        return st
+        else:
+            # 時刻ベースラグ用：row_hist は不要
+            self.row_hist = deque(maxlen=0)
 
-    def _baseline(self, st: _SlotState) -> np.ndarray:
-        out = np.full(self.n, self.fallback, float)
-        valid = st.counts > 0
-        out[valid] = st.sums[valid] / st.counts[valid]
-        return out
+    # ---- 内部 util ----
 
-    def _evict_insert(self, st: _SlotState, new_vals: np.ndarray):
-        i = st.ptr
-        old = st.buf[i, :]
-        old_valid = ~np.isnan(old)
-        st.sums[old_valid] -= old[old_valid]
-        st.counts[old_valid] -= 1
-        st.buf[i, :] = new_vals
-        new_valid = ~np.isnan(new_vals)
-        st.sums[new_valid] += new_vals[new_valid]
-        st.counts[new_valid] += 1
-        st.ptr = (st.ptr + 1) % self.days
+    def _normalize_ts(self, ts: pd.Timestamp) -> pd.Timestamp:
+        return ts.tz_convert(None) if ts.tz is not None else ts
 
     def _make_output_columns(self) -> List[str]:
-        cols = []
-        cols.extend([f"bl__{c}" for c in self.cols])
+        cols: List[str] = []
         for h in self.lags:
-            cols.extend(
-                [f"{self.lag_prefix_fmt.format(h=h)}res__{c}" for c in self.cols]
-            )
+            for c in self.cols:
+                cols.append(f"{self.lag_prefix_fmt.format(h=h)}{c}")
         return cols
 
-    def _compute_lag_concat(self, ts: pd.Timestamp) -> np.ndarray:
+    def _compute_lag_vec(self, ts: pd.Timestamp) -> np.ndarray:
+        """
+        現在の内部履歴から、ts に対するラグベクトルを作る。
+        """
         if not self.lags:
             return np.empty(0, float)
-        vecs = []
-        for h in self.lags:
-            if self.use_freq_shift:
-                v = self.res_by_ts.get(ts - pd.Timedelta(hours=h))
-                vecs.append(v if v is not None else np.full(self.n, np.nan))
-            else:
-                if len(self.res_row_hist) >= h:
-                    vecs.append(self.res_row_hist[-h])
+
+        vecs: List[np.ndarray] = []
+        if self.use_freq_shift:
+            t = self._normalize_ts(ts)
+            for h in self.lags:
+                prev_ts = t - pd.Timedelta(hours=h)
+                v = self.raw_by_ts.get(prev_ts)
+                if v is None:
+                    v = np.full(self.n, np.nan)
+                vecs.append(v)
+        else:
+            # 行ベース: 直近 max_lag 行だけ hist にある前提
+            for h in self.lags:
+                if len(self.row_hist) >= h:
+                    v = list(self.row_hist)[-h]
                 else:
-                    vecs.append(np.full(self.n, np.nan))
-        return np.concatenate(vecs)
+                    v = np.full(self.n, np.nan)
+                vecs.append(v)
+
+        return np.concatenate(vecs, axis=0)
+
+    def _update_state(self, ts: pd.Timestamp, row: np.ndarray) -> None:
+        t = self._normalize_ts(ts)
+        r = np.asarray(row, dtype=float).copy()
+        self.raw_by_ts[t] = r
+        if not self.use_freq_shift:
+            self.row_hist.append(r)
 
     def grow_columns(self, new_cols: List[str]):
+        """
+        既存の履歴に対して nan を埋めて列を増やす。
+        """
         add = [c for c in new_cols if c not in self.col_index]
         if not add:
             return
         k = len(add)
-        for st in self.slots.values():
-            st.buf = np.concatenate([st.buf, np.full((self.days, k), np.nan)], axis=1)
-            st.sums = np.concatenate([st.sums, np.zeros(k)], axis=0)
-            st.counts = np.concatenate([st.counts, np.zeros(k, dtype=np.int64)], axis=0)
-        if self.res_row_hist.maxlen is not None:
-            new_hist = deque(maxlen=self.res_row_hist.maxlen)
-            for v in self.res_row_hist:
+
+        # raw_by_ts 内の各行を拡張
+        for ts, v in list(self.raw_by_ts.items()):
+            self.raw_by_ts[ts] = np.concatenate([v, np.full(k, np.nan)])
+
+        # 行ベース履歴も拡張
+        if self.row_hist:
+            new_hist: Deque[np.ndarray] = deque(maxlen=self.row_hist.maxlen)
+            for v in self.row_hist:
                 new_hist.append(np.concatenate([v, np.full(k, np.nan)]))
-            self.res_row_hist = new_hist
-        for ts, v in list(self.res_by_ts.items()):
-            self.res_by_ts[ts] = np.concatenate([v, np.full(k, np.nan)])
+            self.row_hist = new_hist
+
         base = self.n
         for i, c in enumerate(add):
             self.col_index[c] = base + i
         self.cols.extend(add)
         self.n += k
 
+    # ---- public API ----
+
     def fit_transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        df に対してラグ特徴を計算しつつ、内部履歴も初期化する。
+        """
         df = _ensure_dtindex(df)
         use_cols = [c for c in self.cols if c in df.columns]
         X = df[use_cols].reindex(columns=self.cols, fill_value=np.nan).to_numpy(float)
+
         out_cols = self._make_output_columns()
         out = np.empty((len(df), len(out_cols)), float)
+
         for i, (ts, row) in enumerate(zip(df.index, X)):
-            st = self._get_slot(ts)
-            bl = self._baseline_exact_by_days(ts)
-            lag = self._compute_lag_concat(ts)
-            pos = 0
-            out[i, pos : pos + self.n] = bl
-            pos += self.n
-            for j in range(len(self.lags)):
-                out[i, pos : pos + self.n] = lag[j * self.n : (j + 1) * self.n]
-                pos += self.n
-            res = row - bl
-            if self.use_freq_shift:
-                self.res_by_ts[ts] = res
-            else:
-                self.res_row_hist.append(res)
-            self._evict_insert(st, row)
-            self.raw_by_ts[ts] = row
+            lag_vec = self._compute_lag_vec(ts)
+            out[i, :] = lag_vec
+            # 自分自身を履歴に追加
+            self._update_state(ts, row)
+
         return pd.DataFrame(out, index=df.index, columns=out_cols)
 
     def transform_new(
         self, df: pd.DataFrame, *, allow_growth: bool = False, mutate: bool = True
     ) -> pd.DataFrame:
+        """
+        新しい df に対してラグ特徴を計算。
+        mutate=True のときは内部履歴も前進させる。
+        df が空（列なし）のときは、「過去の履歴だけを使って未来 ts のラグ」を出せる。
+        """
         df = _ensure_dtindex(df)
+
         if allow_growth:
-            # ★ 受け入れ条件も正規化済みプレフィクスに変更
-            incoming = [
-                c
-                for c in list(df.columns)
-                if c in self.cols or c.startswith(_INDOOR_OUT) or c.startswith(_KWH_OUT)
-            ]
+            incoming = list(df.columns)
             self.grow_columns([c for c in incoming if c not in self.col_index])
 
-        use_cols = [c for c in self.cols if c in df.columns]
-        X = df[use_cols].reindex(columns=self.cols, fill_value=np.nan).to_numpy(float)
+        if df.columns.size > 0:
+            use_cols = [c for c in self.cols if c in df.columns]
+            X = (
+                df[use_cols]
+                .reindex(columns=self.cols, fill_value=np.nan)
+                .to_numpy(float)
+            )
+        else:
+            X = np.full((len(df), self.n), np.nan, float)
+
         out_cols = self._make_output_columns()
         out = np.empty((len(df), len(out_cols)), float)
 
         for i, (ts, row) in enumerate(zip(df.index, X)):
-            st = self._get_slot(ts)
-            bl = self._baseline_exact_by_days(ts)
-            lag = self._compute_lag_concat(ts)
+            lag_vec = self._compute_lag_vec(ts)
+            out[i, :] = lag_vec
 
-            pos = 0
-            out[i, pos : pos + self.n] = bl
-            pos += self.n
-            for j in range(len(self.lags)):
-                out[i, pos : pos + self.n] = lag[j * self.n : (j + 1) * self.n]
-                pos += self.n
-
-            # --- ここが変更点：非破壊モードなら更新しない ---
             if mutate:
-                res = row - bl
-                if self.use_freq_shift:
-                    self.res_by_ts[ts] = res
-                else:
-                    self.res_row_hist.append(res)
-                self._evict_insert(st, row)
-                self.raw_by_ts[ts] = row
+                self._update_state(ts, row)
 
         return pd.DataFrame(out, index=df.index, columns=out_cols)
 
 
 class ResidualFeatureDP:
+    """
+    名前はそのままですが、役割は「ラグ DP 管理」に縮退。
+      - _collect_cols で DP 対象列を決める
+      - fit/transform は DP に投げるだけ
+    """
+
     def __init__(
         self,
         *,
@@ -555,13 +589,14 @@ class ResidualFeatureDP:
         self.dp: Optional[_SameTimeDP] = None
 
     def _collect_cols(self, df: pd.DataFrame) -> List[str]:
-        # ★ 入力は正規化済み前提に切り替え
+        # ここで DP 対象列を制御
         indoor = pick_cols(df, _INDOOR_OUT)
-        kwh = pick_cols(df, _KWH_OUT)
-        return indoor + kwh
+        # kWh もラグにしたければ以下を追加
+        # kwh = pick_cols(df, _KWH_OUT)
+        # return indoor + kwh
+        return indoor
 
     def fit(self, base_df: pd.DataFrame) -> pd.DataFrame:
-        # ★ 入力を正規化
         base_df = _ensure_dtindex(_normalize_raw_columns(base_df))
         cols = self._collect_cols(base_df)
         self.dp = _SameTimeDP(
@@ -573,9 +608,9 @@ class ResidualFeatureDP:
             lag_prefix_fmt=self.lag_prefix_fmt,
         )
         raw = self.dp.fit_transform(base_df[cols])
-        raw.columns = _normalize_metric_names(
-            list(raw.columns)
-        )  # 出力側の整形は従来通り
+
+        # 互換用に正規化／並び替え（定義されていれば）
+        raw.columns = _normalize_metric_names(list(raw.columns))
         raw = raw[_order_columns_like_builder(list(raw.columns), lags_hours=self.lags)]
         return raw
 
@@ -584,23 +619,98 @@ class ResidualFeatureDP:
     ) -> pd.DataFrame:
         if self.dp is None:
             raise RuntimeError("fit() を先に呼んでください。")
-        new_df = _ensure_dtindex(_normalize_raw_columns(new_df))  # ★ 入力を正規化
+        new_df = _ensure_dtindex(_normalize_raw_columns(new_df))
         cols = self._collect_cols(new_df)
         out = self.dp.transform_new(new_df[cols], allow_growth=allow_growth)
+
         out.columns = _normalize_metric_names(list(out.columns))
         out = out[_order_columns_like_builder(list(out.columns), lags_hours=self.lags)]
         return out
 
 
-# ========= 最終統合クラス: make_input_data を提供 =========
+# =========================================
+# 共通アセンブリ（ラグ + 時間 + 天気 + 制御）
+# =========================================
+
+
+def _assemble_features_common(
+    *,
+    index: pd.DatetimeIndex,
+    dp: _SameTimeDP,
+    lags_hours: Iterable[int],
+    include_weather_raw: bool,
+    include_original_controls: bool,
+    weather_info: Optional[pd.DataFrame],
+    control_values: Optional[pd.DataFrame],
+    drop_initial_window: bool = False,
+    days_for_baseline: int = 7,
+    finalize_numeric: bool = True,
+    return_baseline: bool = False,
+) -> pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    DP 由来の特徴量は「ラグ列」だけ。
+    baseline (bl__) は作らないので、Y_baseline は空 DataFrame を返す。
+    """
+    ti = pd.DatetimeIndex(index)
+
+    # 1) 時間特徴
+    tf = make_time_features(ti)
+
+    # 2) DP のラグ群（状態は更新しない）
+    empty = pd.DataFrame(index=ti)
+    res_feats = dp.transform_new(empty, allow_growth=False, mutate=False)
+
+    res_feats.columns = _normalize_metric_names(list(res_feats.columns))
+    res_feats = res_feats[
+        _order_columns_like_builder(list(res_feats.columns), lags_hours=lags_hours)
+    ]
+
+    # ベースライン: 今回は使わないので空
+    Y_baseline = pd.DataFrame(index=ti)
+
+    # 3) 追加の天気/操作量
+    parts: list[pd.DataFrame] = [tf, res_feats]
+    if include_weather_raw and (weather_info is not None):
+        parts.append(_ensure_dtindex(weather_info).reindex(ti))
+    if include_original_controls and (control_values is not None):
+        parts.append(_ensure_dtindex(control_values).reindex(ti))
+
+    X = pd.concat(parts, axis=1)
+
+    # 4) 列順を時間 → DPラグ → それ以外
+    time_cols = [
+        c for c in ["hour", "month", "weekday", "is_weekend"] if c in X.columns
+    ]
+    dp_cols = [c for c in res_feats.columns if c in X.columns]
+    tail_cols = [c for c in X.columns if c not in time_cols + dp_cols]
+    X = X[time_cols + dp_cols + tail_cols]
+
+    # 5) 初期ウィンドウ（days + max_lag）を落とす（必要なら）
+    if drop_initial_window:
+        kept_index = _cut_head_for_baseline_and_lag(ti, days_for_baseline, lags_hours)
+        X = X.loc[kept_index]
+        Y_baseline = Y_baseline.reindex(X.index)
+
+    # 6) 数値化・欠損処理
+    if finalize_numeric:
+        X = X.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+
+    return (X, Y_baseline) if return_baseline else X
+
+
+# =========================================
+# 最終統合クラス: InputDataBuilderDP（オンライン用）
+# =========================================
 
 
 class InputDataBuilderDP:
     """
-    - DP法で BL（同時刻・直近N日平均）と 残差ラグ を内部計算
-    - make_input_data(time_info, weather_info, control_values) で
-      [時間] → [室温BL/ラグ] → [kWh BL/ラグ] → [天気(元値)] → [操作量(元値)]
-      を連結して返す（列名は build_features_residualized と互換）
+    - ラグ DP で室内温度ラグ状態を持つ（オンライン予測用）
+    - fit(base_df) が返す特徴量 X は build_features_residualized と同じ構造：
+      X = [時間特徴]
+          + [室内温度ラグ (indoor_temp__*, lag{h}h__…)]
+          + [天気の生値 (任意)]
+          + [操作量（原値 + Duration + Diff1h）]
     """
 
     def __init__(
@@ -614,6 +724,7 @@ class InputDataBuilderDP:
         include_original_controls: bool = True,
         lag_prefix_fmt: str = "lag{h}h__",
     ):
+        # ラグ DP
         self.include_weather_raw = bool(include_weather_raw)
         self.include_original_controls = bool(include_original_controls)
         self.res_dp = ResidualFeatureDP(
@@ -624,35 +735,302 @@ class InputDataBuilderDP:
             lag_prefix_fmt=lag_prefix_fmt,
         )
         self._lags = list(lags_hours)
+        self._days = int(days)
+        self._use_freq_shift = bool(use_freq_shift)
 
+        # 制御・Duration 用の内部状態
+        self._setT_prefix = "A/C Set Temperature__"
+        self._mode_prefix = "A/C Mode__"
+        self._wind_prefix = "A/C Fan Speed__"
+        self._onoff_prefix = "A/C ON/OFF__"
+        self._derived_prefixes = [
+            "Duration_ON__",
+            "Duration_OFF__",
+            "Duration_Mode__",
+            "Duration_Fan__",
+            "Diff1h_SetT__",
+        ]
+
+        self._control_cols_original: list[str] = []  # 元の制御列
+        self._control_cols_derived: list[str] = []  # Duration / Diff1h
+        self._control_cols_all: list[str] = []  # 上2つの和
+        self._control_state_last: Optional[pd.Series] = None  # 直近1ステップ分
+
+        # オンライン履歴ポインタ
+        self._online_started = False
+        self._history_index_last: Optional[pd.Timestamp] = None
+
+    # ---- 内部ヘルパ：履歴から制御状態を初期化 ----
+    def _init_control_state_from_history(self, df: pd.DataFrame) -> None:
+        """
+        過去の実績時系列 df から Duration 等を計算し、
+        その最終行を self._control_state_last として保持する。
+        """
+        if df is None or len(df) == 0:
+            self._control_state_last = None
+            self._control_cols_original = []
+            self._control_cols_derived = []
+            self._control_cols_all = []
+            return
+
+        df = _ensure_dtindex(df)
+
+        # 元制御 + Duration を一旦フルで計算
+        df_with_der = add_control_derived_features(
+            df,
+            setT_prefix=self._setT_prefix,
+            mode_prefix=self._mode_prefix,
+            wind_prefix=self._wind_prefix,
+            onoff_prefix=self._onoff_prefix,
+        )
+
+        # 元の制御列
+        control_prefixes = [
+            self._setT_prefix,
+            self._mode_prefix,
+            self._wind_prefix,
+            self._onoff_prefix,
+        ]
+        ctrl_orig: list[str] = []
+        for p in control_prefixes:
+            ctrl_orig += pick_cols(df_with_der, p)
+
+        # Duration/Diff1h 列
+        ctrl_der: list[str] = []
+        for p in self._derived_prefixes:
+            ctrl_der += pick_cols(df_with_der, p)
+
+        self._control_cols_original = ctrl_orig
+        self._control_cols_derived = ctrl_der
+        self._control_cols_all = ctrl_orig + ctrl_der
+
+        if not self._control_cols_all:
+            self._control_state_last = None
+            return
+
+        # 直近1ステップ分の状態
+        last_row = df_with_der.iloc[-1]
+        self._control_state_last = last_row[self._control_cols_all].copy()
+
+    def _update_control_state_step(self, ctrl_row: pd.Series) -> pd.Series:
+        """
+        単一時刻の制御値（元制御のみ）から、
+        直近状態 self._control_state_last を使って Duration_* / Diff1h_SetT__ を
+        手計算で更新し、「元制御＋Duration/ Diff1h」を含む1行の Series を返す。
+        """
+
+        # --- 初回: まだ state が無いときは、add_control_derived_features で初期化してOK ---
+        if self._control_state_last is None:
+            df0 = pd.DataFrame([ctrl_row])
+            df_with_der = add_control_derived_features(
+                df0,
+                setT_prefix=self._setT_prefix,
+                mode_prefix=self._mode_prefix,
+                wind_prefix=self._wind_prefix,
+                onoff_prefix=self._onoff_prefix,
+            )
+            # 列リストもここで確定
+            control_prefixes = [
+                self._setT_prefix,
+                self._mode_prefix,
+                self._wind_prefix,
+                self._onoff_prefix,
+            ]
+            ctrl_orig: list[str] = []
+            for p in control_prefixes:
+                ctrl_orig += pick_cols(df_with_der, p)
+
+            ctrl_der: list[str] = []
+            for p in self._derived_prefixes:
+                ctrl_der += pick_cols(df_with_der, p)
+
+            self._control_cols_original = ctrl_orig
+            self._control_cols_derived = ctrl_der
+            self._control_cols_all = ctrl_orig + ctrl_der
+
+            self._control_state_last = df_with_der.iloc[-1][
+                self._control_cols_all
+            ].copy()
+            return self._control_state_last.copy()
+
+        # --- 2回目以降: 自前で Duration / Diff を更新していく ---
+        prev = self._control_state_last
+        # 元制御列を揃える（欠けている列は前回値で埋める）
+        cur_orig = ctrl_row.reindex(
+            self._control_cols_original
+        ).copy()  # index が足りないと NaN
+
+        new_state: Dict[str, float] = {}
+
+        # まず元制御列を new_state にセット（NaN は前回値で補完）
+        for col in self._control_cols_original:
+            v = cur_orig.get(col)
+            if pd.isna(v):
+                v = prev.get(col, np.nan)
+            new_state[col] = v
+
+        # ---- ON/OFF 由来の Duration_ON / Duration_OFF ----
+        for col in self._control_cols_original:
+            if not col.startswith(self._onoff_prefix):
+                continue
+            unit = col.replace(self._onoff_prefix, "")
+
+            on_col = col
+            dur_on_col = f"Duration_ON__{unit}"
+            dur_off_col = f"Duration_OFF__{unit}"
+
+            prev_on_raw = prev.get(on_col, 0)
+            prev_on = 1 if pd.notna(prev_on_raw) and prev_on_raw > 0 else 0
+
+            cur_on_raw = new_state[on_col]
+            cur_on = 1 if pd.notna(cur_on_raw) and cur_on_raw > 0 else 0
+
+            prev_dur_on = prev.get(dur_on_col, 0) or 0
+            prev_dur_off = prev.get(dur_off_col, 0) or 0
+
+            if cur_on == 1:
+                # ON 継続 or 新たに ON
+                dur_on = prev_dur_on + 1 if prev_on == 1 else 1
+                dur_off = 0
+            else:
+                # OFF 継続 or 新たに OFF
+                dur_off = prev_dur_off + 1 if prev_on == 0 else 1
+                dur_on = 0
+
+            new_state[dur_on_col] = float(dur_on)
+            new_state[dur_off_col] = float(dur_off)
+
+        # ---- Mode 由来 Duration_Mode ----
+        for col in self._control_cols_original:
+            if not col.startswith(self._mode_prefix):
+                continue
+            unit = col.replace(self._mode_prefix, "")
+            mode_col = col
+            dur_mode_col = f"Duration_Mode__{unit}"
+
+            prev_mode = prev.get(mode_col)
+            cur_mode = new_state[mode_col]
+
+            prev_dur_mode = prev.get(dur_mode_col, 0) or 0
+
+            if pd.notna(prev_mode) and pd.notna(cur_mode) and prev_mode == cur_mode:
+                dur_mode = prev_dur_mode + 1
+            else:
+                dur_mode = 1  # モードが変わった / 初回
+
+            new_state[dur_mode_col] = float(dur_mode)
+
+        # ---- Fan 由来 Duration_Fan ----
+        for col in self._control_cols_original:
+            if not col.startswith(self._wind_prefix):
+                continue
+            unit = col.replace(self._wind_prefix, "")
+            fan_col = col
+            dur_fan_col = f"Duration_Fan__{unit}"
+
+            prev_fan = prev.get(fan_col)
+            cur_fan = new_state[fan_col]
+
+            prev_dur_fan = prev.get(dur_fan_col, 0) or 0
+
+            if pd.notna(prev_fan) and pd.notna(cur_fan) and prev_fan == cur_fan:
+                dur_fan = prev_dur_fan + 1
+            else:
+                dur_fan = 1
+
+            new_state[dur_fan_col] = float(dur_fan)
+
+        # ---- 設定温度の 1時間差分 Diff1h_SetT ----
+        for col in self._control_cols_original:
+            if not col.startswith(self._setT_prefix):
+                continue
+            unit = col.replace(self._setT_prefix, "")
+            setT_col = col
+            diff_col = f"Diff1h_SetT__{unit}"
+
+            prev_T = prev.get(setT_col)
+            cur_T = new_state[setT_col]
+
+            if pd.notna(prev_T) and pd.notna(cur_T):
+                diff = float(cur_T) - float(prev_T)
+            else:
+                diff = 0.0
+
+            new_state[diff_col] = diff
+
+        # --- state を Series にまとめて保存 ---
+        # 既知の derived 列がまだ無ければここで補完
+        if not self._control_cols_derived:
+            ctrl_der: list[str] = []
+            for p in self._derived_prefixes:
+                ctrl_der += [c for c in new_state.keys() if c.startswith(p)]
+            self._control_cols_derived = ctrl_der
+            self._control_cols_all = (
+                self._control_cols_original + self._control_cols_derived
+            )
+
+        # 既存の列順で reindex
+        s = pd.Series(new_state)
+        s = s.reindex(self._control_cols_all).fillna(0.0)
+
+        self._control_state_last = s.copy()
+        return s.copy()
+
+    # ---- fit: ラグ DP 初期化 + 制御状態初期化 + オフライン X 構築 ----
     def fit(self, base_df: pd.DataFrame) -> pd.DataFrame:
-        out = self.res_dp.fit(_normalize_raw_columns(base_df))
+        """
+        base_df から訓練用の特徴量 X を構築して返す。
+        返り値 X は build_features_residualized(base_df, ...) と
+        同じ構造／値になる。
+        """
+        # 1) ラグ DP を初期化（オンラインで使う）
+        _ = self.res_dp.fit(_normalize_raw_columns(base_df))
+
+        # 2) 制御 + Duration の内部状態を履歴から初期化
+        self._init_control_state_from_history(base_df)
+
+        # 3) オフライン用の特徴量は build_features_residualized に任せる
+        X = build_features_residualized(
+            base_df,
+            indoor_prefix="Indoor Temp.__",
+            setT_prefix=self._setT_prefix,
+            mode_prefix=self._mode_prefix,
+            wind_prefix=self._wind_prefix,
+            onoff_prefix=self._onoff_prefix,
+            weather_cols=None,
+            include_weather_raw=self.include_weather_raw,
+            days_for_baseline=self._days,
+            baseline_fallback=self.res_dp.fallback,
+            include_original_controls=self.include_original_controls,
+            lags_hours=self._lags,
+            use_freq_shift=self._use_freq_shift,
+            drop_initial_window=True,
+        )
+
+        # オンライン履歴ポインタもリセット
         self._online_started = False
         self._history_index_last = None
-        return out
 
-    # ====== ★ オンライン運用API ======
+        return X
 
     def begin_online(self, initial_df: pd.DataFrame | None = None) -> None:
         """
-        オンライン運用を開始。内部履歴ポインタをセット。
-        initial_df を渡せば、その末尾を「直近実績」として扱う。
-        渡さない場合は、fit 済み DP の内部状態に依存。
+        オンライン履歴ポインタをセット。initial_df を渡せば、その末尾を「直近実績」に。
+        制御 + Duration の内部状態も initial_df から再初期化する。
         """
         self._online_started = True
-        if initial_df is not None:
+        if initial_df is not None and len(initial_df) > 0:
             ini = _ensure_dtindex(initial_df)
-            if len(ini) == 0:
-                self._history_index_last = None
-            else:
-                self._history_index_last = ini.index[-1]
+            self._history_index_last = ini.index[-1]
+            self._init_control_state_from_history(ini)
         else:
-            self._history_index_last = None  # DP内部の最後時刻に委ねる
+            self._history_index_last = None
 
     def reset_online(self) -> None:
         """オンライン履歴ポインタだけクリア（DP自体のfit状態は維持）。"""
         self._online_started = False
         self._history_index_last = None
+        # 制御状態は明示的には消さない（必要なら begin_online で上書き）
 
     def make_input_next(
         self,
@@ -663,119 +1041,117 @@ class InputDataBuilderDP:
         return_baseline: bool = False,
     ) -> pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]:
         """
-        次時刻（複数でも可）の特徴量を作る。DPの内部状態は更新しない（予測用）。
+        次時刻（複数可）の特徴量を生成。ラグ DP の状態は更新しない（look-ahead）。
+        ただし制御の Duration / Diff1h については、
+        内部状態 self._control_state_last を使ってステップ毎に更新する。
         """
         if self.res_dp.dp is None:
             raise RuntimeError("fit(base_df) の後に呼んでください。")
 
-        if isinstance(index, pd.Timestamp):
-            ti = pd.DatetimeIndex([index])
-        else:
-            ti = pd.DatetimeIndex(index)
-
-        # 1) 時間特徴
-        tf = make_time_features(ti)
-
-        # 2) DP法の BL/ラグ群（状態は更新しない）
-        empty_obs = pd.DataFrame(index=ti)
-        res_feats = self.res_dp.dp.transform_new(
-            empty_obs, allow_growth=False, mutate=False
+        ti = (
+            pd.DatetimeIndex([index])
+            if isinstance(index, pd.Timestamp)
+            else pd.DatetimeIndex(index)
         )
-        res_feats.columns = _normalize_metric_names(list(res_feats.columns))
-        res_feats = res_feats[
-            _order_columns_like_builder(list(res_feats.columns), lags_hours=self._lags)
-        ]
 
-        # ベースライン（任意返却）
-        bl_cols = [c for c in res_feats.columns if c.startswith("bl__")]
-        Y_baseline = res_feats[bl_cols].rename(columns=lambda c: c.replace("bl__", ""))
+        # === 制御の Duration / Diff1h をオンラインで更新 ===
+        control_df_for_assemble: Optional[pd.DataFrame] = None
+        if control_values is not None and self.include_original_controls:
+            cv = _ensure_dtindex(control_values).reindex(ti)
 
-        # 3) 連結
-        parts: list[pd.DataFrame] = [tf, res_feats]
-        if self.include_weather_raw and (weather_info is not None):
-            parts.append(_ensure_dtindex(weather_info).reindex(ti))
-        if self.include_original_controls and (control_values is not None):
-            parts.append(_ensure_dtindex(control_values).reindex(ti))
+            rows: list[pd.Series] = []
+            for ts in ti:
+                row_ctrl = cv.loc[ts]
+                updated = self._update_control_state_step(row_ctrl)
+                rows.append(updated)
 
-        X = pd.concat(parts, axis=1)
-        X = X.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+            control_df_for_assemble = pd.DataFrame(rows, index=ti)
+        else:
+            control_df_for_assemble = None
 
-        # 列順整形
-        time_cols = ["hour", "month", "weekday", "is_weekend"]
-        time_cols = [c for c in time_cols if c in X.columns]
-        dp_cols = [c for c in res_feats.columns if c in X.columns]
-        tail_cols = [c for c in X.columns if c not in time_cols + dp_cols]
-        X = X[time_cols + dp_cols + tail_cols]
-
-        return (X, Y_baseline) if return_baseline else X
+        # === 共通アセンブリ（時間特徴 + DPラグ + 天気 + 制御） ===
+        out = _assemble_features_common(
+            index=ti,
+            dp=self.res_dp.dp,
+            lags_hours=self._lags,
+            include_weather_raw=self.include_weather_raw,
+            include_original_controls=self.include_original_controls,
+            weather_info=weather_info,
+            control_values=control_df_for_assemble,
+            drop_initial_window=False,
+            days_for_baseline=self._days,
+            finalize_numeric=True,
+            return_baseline=return_baseline,
+        )
+        return out
 
     def accumulate_actuals(self, y_actual: pd.DataFrame) -> None:
         """
-        実績データ（少なくとも室温/電力など DP が必要とする系列）を取り込み、
-        DP内部のラグ/BL状態を前進させる。ここで初めて allow_growth=True にする。
+        実績データを取り込み、DP内部のラグ状態だけを前進させる（破壊的更新）。
+
+        - DP（室温ラグなど）は、indoor_temp__* など正規化済みカラムに対して更新。
+        - 制御（SetT/Mode/Fan/ONOFF → Duration_* / Diff1h_SetT）はここでは更新しない。
+        （Duration / Diff1h は make_input_next(...) 側だけで更新する設計）
         """
         if self.res_dp.dp is None:
             raise RuntimeError("fit(base_df) の後に呼んでください。")
 
-        ya = _ensure_dtindex(y_actual)
-        if len(ya) == 0:
+        ya_raw = _ensure_dtindex(y_actual)
+        if len(ya_raw) == 0:
             return
 
-        # 単調増加チェック（必要なら厳格化）
-        if self._history_index_last is not None:
-            if ya.index[0] <= self._history_index_last:
-                raise ValueError(
-                    f"accumulate_actuals の index は {self._history_index_last} より後である必要があります。"
-                )
+        # 時系列順チェック（過去に戻らないように）
+        if (
+            self._history_index_last is not None
+            and ya_raw.index[0] <= self._history_index_last
+        ):
+            raise ValueError(
+                f"accumulate_actuals の index は {self._history_index_last} より後である必要があります。"
+            )
 
-        # DP の内部状態を前進（成長 & 破壊的に更新）
-        #   ここで empty_obs ではなく、実績を渡すのが重要。
-        #   ResidualFeatureDP 側の transform_new が新規データを内部に取り込める前提。
-        _ = self.res_dp.dp.transform_new(ya, allow_growth=True, mutate=True)
+        # --- DP（ラグ）用: 室温などの列を正規化して DP に食わせる ---
+        ya_norm = _normalize_raw_columns(ya_raw)
 
-        self._history_index_last = ya.index[-1]
+        # DP が管理している列だけ抜き出す
+        dp_cols = [c for c in (self.res_dp.dp.cols) if c in ya_norm.columns]
+        if dp_cols:
+            ya_dp = ya_norm[dp_cols]
+            # mutate=True なので DP 内部の履歴（= 1h_lag の元データ）が更新される
+            _ = self.res_dp.dp.transform_new(ya_dp, allow_growth=True, mutate=True)
+
+        # 最後に index を更新
+        self._history_index_last = ya_raw.index[-1]
 
 
-# ========= 目的変数（Y）を残差化 =========
+# ========= 目的変数（Y）: 元値を返す =========
+
+
 def build_targets_residualized(
     base_df: pd.DataFrame,
     *,
     odu_prefix: str = "total_kwh__",
     indoor_prefix: str = "Indoor Temp.__",
-    days_for_baseline: int = 7,
-    baseline_fallback: float = 0.0,
+    days_for_baseline: int = 7,  # 未使用（互換のため）
+    baseline_fallback: float = 0.0,  # 未使用（互換のため）
     out_indoor_prefix: str = "indoor_temp__",
-    fillna_value: float | None = None,  # 欠損を0などで埋めたいときに指定
-    drop_initial_window=True,
+    fillna_value: float | None = None,
+    drop_initial_window: bool = True,  # 未使用（行は落とさない）
 ) -> pd.DataFrame:
     """
-    返り値: Y_res = 元値 - 同時刻過去平均（行数は base_df と一致させる）
+    返り値: 元のターゲット値（室温 / kWh）をそのまま返す。
+      - 室内温度: プレフィックスを Indoor Temp.__ → indoor_temp__ に正規化
+      - kWh     : total_kwh__ をそのまま使用
     列: total_kwh__*, indoor_temp__*
     """
-    # --- 1) index整備（既存の _ensure_dtindex を尊重、なければソートのみ） ---
-    if "_ensure_dtindex" in globals():
-        try:
-            # 新しい引数に対応している場合
-            df = _ensure_dtindex(base_df, duplicate_strategy="keep")
-        except TypeError:
-            # 旧版：引数なし
-            df = _ensure_dtindex(base_df)
-    else:
-        # 念のためのフォールバック
-        if not isinstance(base_df.index, pd.DatetimeIndex):
-            raise ValueError("base_df.index は DatetimeIndex 必須です。")
-        df = base_df.sort_index()
-
+    df = _ensure_dtindex(base_df)
     original_index = df.index
 
-    # --- 2) 出力列の収集 ---
     y_odu_cols = pick_cols(df, odu_prefix)
     y_ind_cols_raw = pick_cols(df, indoor_prefix)
     y_ind_cols_map = {
         c: c.replace(indoor_prefix, out_indoor_prefix) for c in y_ind_cols_raw
     }
 
-    # --- 3) 元ターゲット（出力名で統一） ---
     Y_raw = pd.DataFrame(index=original_index)
     if y_odu_cols:
         Y_raw[y_odu_cols] = df[y_odu_cols].reindex(original_index)
@@ -785,23 +1161,7 @@ def build_targets_residualized(
         )
 
     if not Y_raw.columns.tolist():
-        Y_res = pd.DataFrame(index=original_index)
-        return Y_res if fillna_value is None else Y_res.fillna(fillna_value)
+        Y_empty = pd.DataFrame(index=original_index)
+        return Y_empty if fillna_value is None else Y_empty.fillna(fillna_value)
 
-    # --- 4) BL を計算（必ず元 index に揃える） ---
-    Y_bl = compute_same_time_baseline(
-        Y_raw, Y_raw.columns, days=days_for_baseline, fallback=baseline_fallback
-    ).reindex(original_index)
-
-    # --- 5) 残差 + 整形（行は落とさない） ---
-    Y_res = (Y_raw - Y_bl).reindex(original_index)
-    Y_res = Y_res.apply(pd.to_numeric, errors="coerce")
-    if drop_initial_window:
-        kept_index = _cut_head_for_baseline_and_lag(
-            original_index, days_for_baseline, [0]
-        )
-        Y_res = Y_res.loc[kept_index]
-    if fillna_value is not None:
-        Y_res = Y_res.fillna(fillna_value)
-
-    return Y_res
+    return Y_raw
