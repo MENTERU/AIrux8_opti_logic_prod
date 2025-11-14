@@ -174,7 +174,9 @@ class MultiDeviceQuadHeadDiscreteActor(nn.Module):
         self.device = device or preprocess_net.device
         self.backbone = preprocess_net
         hid = preprocess_net.output_dim
-        self.head_temp = nn.Linear(hid, n_devices * n_temp)
+        self.head_temp = nn.Linear(
+            hid, n_devices * n_temp
+        )  # t[Bのサイズ, デバイス, 温度クラスのロジットの値]
         self.head_mode = nn.Linear(hid, n_devices * n_mode)
         self.head_wind = nn.Linear(hid, n_devices * n_wind)
         self.head_on_off = nn.Linear(hid, n_devices * n_onoff)
