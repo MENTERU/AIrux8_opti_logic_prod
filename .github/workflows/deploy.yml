@@ -55,4 +55,4 @@ jobs:
             --max-instances=1 \
             --set-env-vars=STORAGE_BACKEND=gcs,PROJECT_ID=${{ vars.PROJECT_ID }},BUCKET_NAME=${{ vars.BUCKET_NAME }},CLEA_OUT_GDRIVE_FOLDER_ID=${{ vars.CLEA_OUT_GDRIVE_FOLDER_ID }} \
             --no-allow-unauthenticated \
-            --ingress-settings internal-only
+            --ingress internal-only

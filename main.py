@@ -1,7 +1,8 @@
 # =============================================================================
 # エアコン最適化システム - 実行サンプル
 # =============================================================================
-
+# TODO: Devide into mutliple services
+# (e.g. preprocessing, aggregation, optimization on GCP Cloud Run)
 import argparse
 import logging
 import os
@@ -149,7 +150,7 @@ def run_optimization_for_store(
     strategy: str = "hourly",
 ):
     """
-    指定されたストアの最適化を実行 (Cloud Run or Local Development)
+    指定されたストアの最適化を実行 (Cloud Run or Local Development )
 
     Args:
         store_name: ストア名
