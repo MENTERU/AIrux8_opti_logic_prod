@@ -272,6 +272,7 @@ def add_control_derived_features(
 
 
 # ========= オフライン用: X を構築 =========
+""" 学習時の特徴量を生成する関数 """
 
 
 def build_features_residualized(
@@ -285,24 +286,27 @@ def build_features_residualized(
     weather_cols: Optional[
         Iterable[str]
     ] = None,  # 例: ["Outdoor Temp.", "Outdoor Humidity", "Solar Radiation"]
-    include_weather_raw: bool = False,  # 天気は“元値のみ”入れるか
-    days_for_baseline: int = 8,  # 今は「初期ウィンドウを落とす」ためだけに使用
-    baseline_fallback: float = 0.0,  # 未使用（互換のため残し）
+    include_weather_raw: bool = False,  # ★ 天気は“元値のみ”入れるか（デフォルトは入れない）
+    days_for_baseline: int = 8,
+    baseline_fallback: float = 0.0,
     include_original_controls: bool = True,
-    lags_hours=[1],
-    use_freq_shift=False,
+    lags_hours=[1],  # “残差のラグ”に使う
+    use_freq_shift=False,  # 欠番が多いとき True
     drop_initial_window=True,
 ) -> pd.DataFrame:
     """
     X = [時間特徴]
-        + [室内温度ラグ (indoor_temp__*, lag{h}h__…)]
-        + [天気: 生値のみ（オプション）]
+        + [室温: BL と 残差ラグ群 (BL は ON/OFF 条件付き)]
+        + [室外機kWh: BL と 残差ラグ群 (BL は従来の同時刻平均)]
+        + [天気は bl__/res__ を作らない（必要なら元値のみ）]
         + [操作量（原値 + Duration + Diff1h）]
+
+    ※ 行数は base_df と一致させる（original_index を常に維持）
     """
     # index 整備
     df = _ensure_dtindex(base_df)
 
-    # 制御値からの派生特徴量を追加
+    # ★ 制御値からの派生特徴量を追加
     df = add_control_derived_features(
         df,
         setT_prefix=setT_prefix,
@@ -320,28 +324,25 @@ def build_features_residualized(
         tf = tf.set_index(original_index)
     parts.append(tf.reindex(original_index))
 
-    # 2) 室内温度: ラグのみ
+    # 2) 室内温度: BL + 残差ラグ（BL は ON/OFF 条件付き）
     indoor_cols_raw = pick_cols(df, indoor_prefix)
     if indoor_cols_raw:
+        # # 室温を "indoor_temp__" プレフィックスに揃える
         tmp_in = df[indoor_cols_raw].copy()
-        rename_in = {
-            c: c.replace(indoor_prefix, "indoor_temp__") for c in indoor_cols_raw
-        }
-        tmp_in.rename(columns=rename_in, inplace=True)
-
         indoor_out_cols = list(tmp_in.columns)
 
+        # 室温ラグ特徴の作成（例: 1時間前の室温）
+        # lags_hours は関数引数の lags_hours をそのまま使う
         lag_temp = add_lagged_features(
             tmp_in,
             indoor_out_cols,
-            lags_hours=lags_hours,
+            lags_hours=lags_hours,  # 例: [1] にしておくと 1h 前だけ
             use_freq_shift=use_freq_shift,
             prefix_fmt="lag{h}h__",
         ).reindex(original_index)
 
         parts.append(lag_temp)
-
-    # 3) 天気: 生値のみ
+    # 4) 天気: ★ bl__/res__ を作らない。必要なら“元値のみ”追加
     if include_weather_raw:
         if weather_cols is None:
             candidates = ["Outdoor Temp.", "Outdoor Humidity", "Solar Radiation"]
@@ -349,16 +350,18 @@ def build_features_residualized(
         if weather_cols:
             parts.append(df[list(weather_cols)].copy().reindex(original_index))
 
-    # 4) 操作量（原値 + 派生特徴）
+    # 5) 操作量（原値 + 派生特徴）
     if include_original_controls:
         control_cols: list[str] = []
 
+        # 元の制御値 prefix
         control_prefixes = [
             setT_prefix,
             mode_prefix,
             wind_prefix,
             onoff_prefix,
         ]
+        # 派生特徴の prefix（Duration / Diff1h）
         derived_prefixes = [
             "Duration_ON__",
             "Duration_OFF__",
@@ -376,15 +379,71 @@ def build_features_residualized(
     # 結合（行は落とさない）
     X = pd.concat(parts, axis=1)
     X = X.reindex(original_index)
-
     if drop_initial_window:
         kept_index = _cut_head_for_baseline_and_lag(
             original_index, days_for_baseline, lags_hours
         )
         X = X.loc[kept_index]
-
     X = X.apply(pd.to_numeric, errors="coerce").fillna(0.0)
     return X
+
+
+""" 目的変数を前処理するコード """
+
+
+def build_targets_residualized(
+    base_df: pd.DataFrame,
+    *,
+    odu_prefix: str = "total_kwh__",
+    indoor_prefix: str = "Indoor Temp.__",
+    onoff_prefix: str = "A/C ON/OFF__",
+    days_for_baseline: int = 8,
+    baseline_fallback: float = 0.0,
+    out_indoor_prefix: str = "indoor_temp__",
+    fillna_value: float | None = None,  # 欠損を0などで埋めたいときに指定
+    drop_initial_window=True,
+) -> pd.DataFrame:
+    """
+    返り値: Y_res = 元値 - baseline（行数は base_df と一致させる）
+      - 室内温度: 同時刻 + 同一 ON/OFF 状態の baseline
+      - kWh     : 同時刻平均 baseline
+    列: total_kwh__*, indoor_temp__*
+    """
+    # --- 1) index整備 ---
+    if "_ensure_dtindex" in globals():
+        try:
+            # 新しい引数に対応している実装向けの呼び出し（存在しなければ TypeError）
+            df = _ensure_dtindex(base_df, duplicate_strategy="keep")  # type: ignore
+        except TypeError:
+            df = _ensure_dtindex(base_df)
+    else:
+        if not isinstance(base_df.index, pd.DatetimeIndex):
+            raise ValueError("base_df.index は DatetimeIndex 必須です。")
+        df = base_df.sort_index()
+
+    original_index = df.index
+
+    # --- 2) 出力列の収集 ---
+    y_odu_cols = pick_cols(df, odu_prefix)
+    y_ind_cols_raw = pick_cols(df, indoor_prefix)
+    y_ind_cols_map = {
+        c: c.replace(indoor_prefix, out_indoor_prefix) for c in y_ind_cols_raw
+    }
+    indoor_out_cols = list(y_ind_cols_map.values())
+
+    # --- 3) 元ターゲット（出力名で統一） ---
+    Y_raw = pd.DataFrame(index=original_index)
+    if y_odu_cols:
+        Y_raw[y_odu_cols] = df[y_odu_cols].reindex(original_index)
+    if y_ind_cols_raw:
+        Y_raw[indoor_out_cols] = (
+            df[y_ind_cols_raw].rename(columns=y_ind_cols_map).reindex(original_index)
+        )
+
+    if not Y_raw.columns.tolist():
+        Y_res = pd.DataFrame(index=original_index)
+        return Y_res if fillna_value is None else Y_res.fillna(fillna_value)
+    return Y_raw
 
 
 # =========================================
@@ -1121,47 +1180,3 @@ class InputDataBuilderDP:
 
         # 最後に index を更新
         self._history_index_last = ya_raw.index[-1]
-
-
-# ========= 目的変数（Y）: 元値を返す =========
-
-
-def build_targets_residualized(
-    base_df: pd.DataFrame,
-    *,
-    odu_prefix: str = "total_kwh__",
-    indoor_prefix: str = "Indoor Temp.__",
-    days_for_baseline: int = 7,  # 未使用（互換のため）
-    baseline_fallback: float = 0.0,  # 未使用（互換のため）
-    out_indoor_prefix: str = "indoor_temp__",
-    fillna_value: float | None = None,
-    drop_initial_window: bool = True,  # 未使用（行は落とさない）
-) -> pd.DataFrame:
-    """
-    返り値: 元のターゲット値（室温 / kWh）をそのまま返す。
-      - 室内温度: プレフィックスを Indoor Temp.__ → indoor_temp__ に正規化
-      - kWh     : total_kwh__ をそのまま使用
-    列: total_kwh__*, indoor_temp__*
-    """
-    df = _ensure_dtindex(base_df)
-    original_index = df.index
-
-    y_odu_cols = pick_cols(df, odu_prefix)
-    y_ind_cols_raw = pick_cols(df, indoor_prefix)
-    y_ind_cols_map = {
-        c: c.replace(indoor_prefix, out_indoor_prefix) for c in y_ind_cols_raw
-    }
-
-    Y_raw = pd.DataFrame(index=original_index)
-    if y_odu_cols:
-        Y_raw[y_odu_cols] = df[y_odu_cols].reindex(original_index)
-    if y_ind_cols_raw:
-        Y_raw[list(y_ind_cols_map.values())] = (
-            df[y_ind_cols_raw].rename(columns=y_ind_cols_map).reindex(original_index)
-        )
-
-    if not Y_raw.columns.tolist():
-        Y_empty = pd.DataFrame(index=original_index)
-        return Y_empty if fillna_value is None else Y_empty.fillna(fillna_value)
-
-    return Y_raw

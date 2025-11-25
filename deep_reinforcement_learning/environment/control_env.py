@@ -155,10 +155,6 @@ class AirControlEnv(gym.Env):
             else:
                 # 「Indoor Temp.__X」→「indoor_temp__X」をフォールバック
                 v = np.nan
-                if c.startswith("Indoor Temp.__"):
-                    alt = c.replace("Indoor Temp.__", "indoor_temp__")
-                    if alt in last_row.index:
-                        v = last_row[alt]
 
             # 数値化 & 欠損→0
             try:
