@@ -1,0 +1,25 @@
+services:
+  job-trass-data-loader: &job-trass-data-loader
+    container_name: job-trass-data-loader
+    build:
+      context: .
+      dockerfile: Dockerfile
+      ssh:
+        default: .ssh/deploy_key   # private key
+    volumes:
+      - .:/app                                  
+      - ./config:/app/config:ro                 
+    working_dir: /app
+    command: python main.py
+    restart: "no"
+    environment:
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONUNBUFFERED=1
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/config/airux8-opti-logic-d0f3af5bd5bd.json
+      - DOCKER_BUILDKIT=1
+    networks:
+      - menteru-net
+
+networks:
+  menteru-net:
+    driver: bridge

@@ -114,3 +114,18 @@ This repository provides a Python-based pipeline to load, unify, and preprocess 
 * Uses Python logging with INFO/WARNING/ERROR levels.
 * Logs include file paths, store names, and summary shapes of loaded DataFrames.
 
+## GCP Deployment
+
+   ```bash
+   gcloud iam service-accounts create job-trass-data-loader \
+      --project=airux8-opti-logic \
+      --description="HVAC Data Loader Service Account" \
+      --display-name="job-trass-data-loader"
+
+   gcloud projects add-iam-policy-binding airux8-opti-logic \
+      --member="serviceAccount:job-trass-data-loader@airux8-opti-logic.iam.gserviceaccount.com" \
+      --role="roles/storage.objectAdmin"
+
+      ```
+
+
