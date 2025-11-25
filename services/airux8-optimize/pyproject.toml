@@ -30,4 +30,4 @@ dependencies = [
 ]
 
 [tool.uv.workspace]
-members = ["jobs/job-clea-data-scraping"]
+members = ["jobs/clea-data-scraping"]
