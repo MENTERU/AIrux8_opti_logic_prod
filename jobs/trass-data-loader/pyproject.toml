@@ -8,6 +8,7 @@ dependencies = [
     "menteru-tools",
     "numpy>=2.3.4",
     "pandas>=2.3.3",
+    "pytz>=2025.2",
 ]
 
 [tool.uv.sources]

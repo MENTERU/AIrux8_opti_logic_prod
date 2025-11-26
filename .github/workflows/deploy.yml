@@ -36,6 +36,12 @@ jobs:
         run: |
           gcloud auth configure-docker ${{ vars.REGION }}-docker.pkg.dev
 
+      - name: Set up SSH key for BuildKit
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.MENTERU_TOOLS_DEPLOY_KEY }}" > ~/.ssh/menteru_tools_deploy_key
+          chmod 600 ~/.ssh/menteru_tools_deploy_key
+
 
       # 🔹 Detect Changed Functions
       - name: Detect Changed Functions
@@ -82,10 +88,8 @@ jobs:
             IMAGE_NAME=${{ vars.REGION }}-docker.pkg.dev/${{ vars.PROJECT_ID }}/${{ vars.OPTIMIZE_ARTIFACT_REPO }}/job-$dir_lower:${{ vars.DEV_ENV }}
             echo "Building and deploying $JOB_NAME..."
 
-            # Build and push Docker image from the job directory
-            cd jobs/$dir
-            docker buildx build --platform linux/amd64 -t $IMAGE_NAME . --push
-            cd ../..
+            # Build and push Docker image
+            DOCKER_BUILDKIT=1 docker buildx build --platform linux/amd64 --ssh default=~/.ssh/menteru_tools_deploy_key -t $IMAGE_NAME ./jobs/$dir --push
             echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
 
             # Deploy to Cloud Run Job
@@ -101,9 +105,49 @@ jobs:
                 --set-env-vars=PROJECT_ID=${{ vars.PROJECT_ID }},BUCKET_NAME=${{ vars.BUCKET_NAME }}
 
             elif [ "$dir_lower" = "trass-data-loader" ]; then
-              # TODO: Add trass-data-loader deployment configuration
-              echo "trass-data-loader deployment not yet configured"
-            fi
+              gcloud run jobs deploy $JOB_NAME \
+                --region=${{ vars.REGION }} \
+                --image="$IMAGE_NAME" \
+                --service-account=${{ vars.JOB_TRASS_DATA_LOADER_SA }} \
+                --task-timeout=1200s \
+                --set-env-vars "PROJECT_ID=${{ vars.PROJECT_ID }}" \
+                --set-env-vars "BUCKET_NAME=${{ vars.BUCKET_NAME }}" \
+                --set-env-vars "START_DATE=" \
+                --set-env-vars "END_DATE=" \
+                --set-env-vars "INPUT_DATA_PATH=${{ vars.DATA_LOADER_INPUT_DATA_PATH }}" \
+                --set-env-vars "LOADED_DATA_PATH=${{ vars.DATA_LOADER_LOADED_DATA_PATH }}" \
+              # Check if scheduler job exists
+              if gcloud scheduler jobs describe job-$dir_lower-scheduler --location=${{ vars.REGION }} 2>/dev/null; then
+                echo "Updating existing scheduler job..."
+                gcloud scheduler jobs update http job-$dir_lower-scheduler \
+                  --location="${{ vars.REGION }}" \
+                  --schedule="0 5 * * *" \
+                  --time-zone="Asia/Tokyo" \
+                  --uri="https://${{ vars.REGION }}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${{ vars.PROJECT_ID }}/jobs/$IMAGE_NAME:run" \
+                  --http-method="POST" \
+                  --oauth-service-account-email="${{ vars.JOB_TRASS_DATA_LOADER_SA }}" \
+                  --oauth-token-scope="https://www.googleapis.com/auth/cloud-platform" \
+                  --description="Scheduler job that triggers $IMAGE_NAME everyday at 05:00 (JST)" \
+                  --attempt-deadline=300s \
+                  --min-backoff=60s \
+                  --max-backoff=60s \
+                  --max-retry-duration=300s
+              else
+                echo "Creating new scheduler job..."
+                gcloud scheduler jobs create http job-$dir_lower-scheduler \
+                  --location="${{ vars.REGION }}" \
+                  --schedule="0 5 * * *" \
+                  --time-zone="Asia/Tokyo" \
+                  --uri="https://${{ vars.REGION }}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${{ vars.PROJECT_ID }}/jobs/$IMAGE_NAME:run" \
+                  --http-method="POST" \
+                  --oauth-service-account-email="${{ vars.JOB_TRASS_DATA_LOADER_SA }}" \
+                  --oauth-token-scope="https://www.googleapis.com/auth/cloud-platform" \
+                  --description="Scheduler job that triggers $IMAGE_NAME everyday at 05:00 (JST)" \
+                  --attempt-deadline=300s \
+                  --min-backoff=60s \
+                  --max-backoff=60s \
+                  --max-retry-duration=300s
+              fi
           done
 
 
