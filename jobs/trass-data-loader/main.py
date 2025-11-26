@@ -1,7 +1,8 @@
 import logging
 import os
 import re
-from datetime import datetime
+import sys
+from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -211,82 +212,101 @@ def compose_odu(df: pd.DataFrame) -> Optional[pd.DataFrame]:
 
 def main():
 
-    logger.info("🚀 Starting data loading pipeline...")
+    try:
 
-    start_date = (
-        GCPEnv.START_DATE if GCPEnv.START_DATE else datetime.now().strftime("%Y-%m-%d")
-    )
+        logger.info("🚀 Starting data loading pipeline...")
 
-    end_date = GCPEnv.END_DATE if GCPEnv.END_DATE else start_date
+        now_dt = datetime.now()
 
-    gc_storage_obj = storage.Storage(
-        project_id=GCPEnv.PROJECT_ID, bucket_id=GCPEnv.BUCKET_ID
-    )
-
-    if DATA_SOURCE_TYPE == DataSourceType.LOCAL:
-        store_names = [
-            n
-            for n in os.listdir(LOCAL_INPUT_DATA_PATH)
-            if os.path.isdir(os.path.join(LOCAL_INPUT_DATA_PATH, n))
-        ]
-    else:
-        store_names = gc_storage_obj.list_folders(GCPEnv.INPUT_DATA_PATH)
-
-    logger.info(f"Stores detected: {store_names}")
-
-    for store_name in store_names:
-        logger.info(f"📌 Processing store: {store_name}")
-
-        input_prefix = os.path.join(
-            (
-                LOCAL_INPUT_DATA_PATH
-                if DATA_SOURCE_TYPE == DataSourceType.LOCAL
-                else GCPEnv.INPUT_DATA_PATH
-            ),
-            store_name,
+        end_date = (
+            GCPEnv.END_DATE if GCPEnv.END_DATE else now_dt.strftime("%Y-%m-%d %H:%M:%S")
         )
-        output_prefix = os.path.join(
-            (
-                LOCAL_LOADED_DATA_PATH
-                if DATA_SOURCE_TYPE == DataSourceType.LOCAL
-                else GCPEnv.LOADED_DATA_PATH
-            ),
-            store_name,
+
+        start_date = (
+            GCPEnv.START_DATE
+            if GCPEnv.START_DATE
+            else (now_dt - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        )
+
+        if datetime.strptime(start_date, "%Y-%m-%d %H:%M:%S") > datetime.strptime(
+            end_date, "%Y-%m-%d %H:%M:%S"
+        ):
+            raise Exception("Input dates inconsistent, must be START_DATE <= END_DATE")
+
+        gc_storage_obj = storage.Storage(
+            project_id=GCPEnv.PROJECT_ID, bucket_id=GCPEnv.BUCKET_ID
         )
 
         if DATA_SOURCE_TYPE == DataSourceType.LOCAL:
-            os.makedirs(output_prefix, exist_ok=True)
+            store_names = [
+                n
+                for n in os.listdir(LOCAL_INPUT_DATA_PATH)
+                if os.path.isdir(os.path.join(LOCAL_INPUT_DATA_PATH, n))
+            ]
         else:
-            gc_storage_obj.makedirs(output_prefix)
+            store_names = gc_storage_obj.list_folders(GCPEnv.INPUT_DATA_PATH)
 
-        idu_raw, odu_raw = load_raw(input_prefix, gc_storage_obj, start_date, end_date)
-        idu = compose_idu(idu_raw)
-        odu = compose_odu(odu_raw)
+        logger.info(f"Stores detected: {store_names}")
 
-        if idu is not None:
-            idu_output = os.path.join(output_prefix, f"{IDU_FILENAME_PREFIX}.csv")
-            (
-                idu.to_csv(idu_output, index=False)
-                if DATA_SOURCE_TYPE == DataSourceType.LOCAL
-                else gc_storage_obj.write_csv(idu, idu_output)
+        for store_name in store_names:
+            logger.info(f"📌 Processing store: {store_name}")
+
+            input_prefix = os.path.join(
+                (
+                    LOCAL_INPUT_DATA_PATH
+                    if DATA_SOURCE_TYPE == DataSourceType.LOCAL
+                    else GCPEnv.INPUT_DATA_PATH
+                ),
+                store_name,
             )
-            logger.info(f"IDU saved: {idu_output}")
-        else:
-            logger.warning(f"No IDU data to save for store {store_name}")
-
-        if odu is not None:
-            odu_output = os.path.join(output_prefix, f"{ODU_FILENAME_PREFIX}.csv")
-            (
-                odu.to_csv(odu_output, index=False)
-                if DATA_SOURCE_TYPE == DataSourceType.LOCAL
-                else gc_storage_obj.write_csv(odu, odu_output)
+            output_prefix = os.path.join(
+                (
+                    LOCAL_LOADED_DATA_PATH
+                    if DATA_SOURCE_TYPE == DataSourceType.LOCAL
+                    else GCPEnv.LOADED_DATA_PATH
+                ),
+                store_name,
             )
-            logger.info(f"ODU saved: {odu_output}")
-        else:
-            logger.warning(f"No ODU data to save for store {store_name}")
 
-    logger.info("🎉 Data pipeline completed successfully!")
+            if DATA_SOURCE_TYPE == DataSourceType.LOCAL:
+                os.makedirs(output_prefix, exist_ok=True)
+            else:
+                gc_storage_obj.makedirs(output_prefix)
+
+            idu_raw, odu_raw = load_raw(
+                input_prefix, gc_storage_obj, start_date, end_date
+            )
+            idu = compose_idu(idu_raw)
+            odu = compose_odu(odu_raw)
+
+            if idu is not None:
+                idu_output = os.path.join(output_prefix, f"{IDU_FILENAME_PREFIX}.csv")
+                (
+                    idu.to_csv(idu_output, index=False)
+                    if DATA_SOURCE_TYPE == DataSourceType.LOCAL
+                    else gc_storage_obj.write_csv(idu, idu_output)
+                )
+                logger.info(f"IDU saved: {idu_output}")
+            else:
+                logger.warning(f"No IDU data to save for store {store_name}")
+
+            if odu is not None:
+                odu_output = os.path.join(output_prefix, f"{ODU_FILENAME_PREFIX}.csv")
+                (
+                    odu.to_csv(odu_output, index=False)
+                    if DATA_SOURCE_TYPE == DataSourceType.LOCAL
+                    else gc_storage_obj.write_csv(odu, odu_output)
+                )
+                logger.info(f"ODU saved: {odu_output}")
+            else:
+                logger.warning(f"No ODU data to save for store {store_name}")
+
+        logger.info("🎉 Data pipeline completed successfully!")
+        return 0
+    except Exception as e:
+        logger.error(f"Error during data loading: {e}")
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
