@@ -13,7 +13,14 @@ from service.secretmanager import SecretManagerClient
 
 
 async def main():
-    """Main function to run scraping job"""
+    """Main function to run scraping job
+    
+    Args:
+        None
+
+    Returns:
+        None
+    """
     scraper = None
     try:
         print("=" * 60)
