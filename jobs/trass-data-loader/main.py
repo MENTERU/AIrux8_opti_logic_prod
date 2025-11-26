@@ -12,6 +12,9 @@ from config.config import *
 from config.config_gcp import GCPEnv
 from menteru_tools.gcp_service import storage
 
+# ==========================================
+# Logging Configuration
+# ==========================================
 # Configure the root logger to output to standard output with a specific format.
 # Level INFO ensures we capture flow and key events, but not debug noise.
 logging.basicConfig(
