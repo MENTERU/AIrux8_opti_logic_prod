@@ -161,7 +161,7 @@ jobs:
               SERVICE_URL=$(gcloud run services describe $SVC_NAME --region=${{ vars.REGION }} --format="value(status.url)")
               SCHEDULER_JOB_NAME=svc-${dir_lower}-${{ vars.DEV_ENV }}
               
-              # Check if scheduler job exists
+              # Check if scheduler job exists and update or create
               if gcloud scheduler jobs describe $SCHEDULER_JOB_NAME --location=${{ vars.REGION }} 2>/dev/null; then
                 echo "Updating existing scheduler job..."
                 gcloud scheduler jobs update http $SCHEDULER_JOB_NAME \
@@ -172,7 +172,7 @@ jobs:
                   --oidc-token-audience="$SERVICE_URL/execute_optimization_pipeline" \
                   --http-method="POST" \
                   --oidc-service-account-email="${{ vars.SVC_AIRUX8_OPTIMIZE_SA }}" \
-                  --description="Run svc-airux8-optimize daily" \
+                  --description="Run svc-airux8-optimize daily" || true
               else
                 echo "Creating new scheduler job..."
                 gcloud scheduler jobs create http $SCHEDULER_JOB_NAME \
@@ -183,7 +183,7 @@ jobs:
                   --oidc-token-audience="$SERVICE_URL/execute_optimization_pipeline" \
                   --http-method="POST" \
                   --oidc-service-account-email="${{ vars.SVC_AIRUX8_OPTIMIZE_SA }}" \
-                  --description="Run svc-airux8-optimize daily"
+                  --description="Run svc-airux8-optimize daily" || true
               fi
             fi
             
