@@ -520,7 +520,6 @@ class Optimizer:
         # Get weather weights based on first hour of forecast day
         forecast_first_hour = pd.to_datetime(forecast_day_data["datetime"].iloc[0]).hour
         weather_weights = self._get_weather_weights(forecast_first_hour)
-        print("[similar days function] weather_weights", weather_weights)
         # Calculate day-level distance score (lower is better)
         daily_hist["score"] = abs(daily_hist["temp_z"] - forecast_temp_z) + abs(
             daily_hist["solar_z"] - forecast_solar_z
@@ -776,9 +775,6 @@ class Optimizer:
         # Get weather weights based on first hour of forecast block
         forecast_first_hour = pd.to_datetime(forecast_block["datetime"].iloc[0]).hour
         weather_weights = self._get_weather_weights(forecast_first_hour)
-        print(
-            "[calculate_hour_block_distance function] weather_weights", weather_weights
-        )
         # Calculate weighted weather distance (lower is better)
         weather_distance = (
             weather_weights["temperature"] * temp_diff
@@ -1440,3 +1436,142 @@ class Optimizer:
         )
 
         return base_df
+
+    def get_unit_format(
+        self, zone_wide_df: pd.DataFrame, master_data: dict
+    ) -> pd.DataFrame:
+        """
+        Convert zone-level wide format DataFrame to unit-level wide format DataFrame.
+
+        This is a public method that can be called after optimize_all_zones to get
+        unit-level output format matching unit_schedule CSV format.
+
+        Args:
+            zone_wide_df: Zone-level wide format DataFrame (from optimize_all_zones)
+            master_data: Master data dictionary containing zone-to-unit mappings
+
+        Returns:
+            Unit-level wide format DataFrame with unit-specific columns
+        """
+        return self._convert_to_unit_format(zone_wide_df, master_data)
+
+    def _convert_to_unit_format(
+        self, zone_wide_df: pd.DataFrame, master_data: dict
+    ) -> pd.DataFrame:
+        """
+        Convert zone-level wide format DataFrame to unit-level wide format DataFrame.
+
+        This method maps each zone to its indoor units from master data and creates
+        unit-specific columns by duplicating zone data for each unit in that zone.
+
+        The output format matches unit_schedule CSV format:
+        - Date Time column in "YYYY/MM/DD HH:MM" format
+        - For each unit: {unit_name}_OnOFF, {unit_name}_Mode, {unit_name}_SetTemp, {unit_name}_FanSpeed
+
+        Args:
+            zone_wide_df: Zone-level wide format DataFrame (from _convert_to_wide_format)
+            master_data: Master data dictionary containing zone-to-unit mappings
+
+        Returns:
+            Unit-level wide format DataFrame with unit-specific columns
+        """
+        if zone_wide_df.empty:
+            return pd.DataFrame()
+
+        # Build zone-to-units mapping from master data
+        zones = master_data.get("zones", {})
+        zone_to_units: Dict[str, List[str]] = {}
+        for zone_name, zone_info in zones.items():
+            units = []
+            for _, outdoor_unit_info in zone_info.get("outdoor_units", {}).items():
+                units.extend(outdoor_unit_info.get("indoor_units", []))
+            # Remove duplicates while preserving order
+            zone_to_units[zone_name] = list(dict.fromkeys(units))
+
+        if not zone_to_units:
+            logging.warning(
+                "No zone-to-unit mapping found in master data. Cannot convert to unit format."
+            )
+            return pd.DataFrame()
+
+        # Create base DataFrame with Date Time column (matching unit_schedule format)
+        base_df = zone_wide_df[["datetime"]].copy()
+        base_df["Date Time"] = base_df["datetime"].dt.strftime("%Y/%m/%d %H:%M")
+        base_df = base_df[["Date Time"]].copy()
+
+        # For each zone, get its units and create unit-level columns
+        for zone_name, units in zone_to_units.items():
+            if not units:
+                logging.warning(f"Zone {zone_name} has no indoor units, skipping")
+                continue
+
+            # Get zone data columns
+            zone_prefix = f"{zone_name}_"
+            zone_columns = [
+                col for col in zone_wide_df.columns if col.startswith(zone_prefix)
+            ]
+
+            if not zone_columns:
+                logging.warning(
+                    f"No data found for zone {zone_name} in zone_wide_df, skipping"
+                )
+                continue
+
+            # Extract zone data
+            zone_data = zone_wide_df[["datetime"] + zone_columns].copy()
+
+            # Get zone-specific values
+            zone_set_temp_col = f"{zone_prefix}set_temp"
+            zone_mode_col = f"{zone_prefix}mode"
+            zone_fan_speed_col = f"{zone_prefix}fan_speed"
+            zone_numb_units_on_col = f"{zone_prefix}numb_units_on"
+            zone_ac_on_off_col = f"{zone_prefix}ac_on_off"
+
+            # For each unit in the zone, create unit-specific columns
+            for unit_name in units:
+                # OnOFF: Use zone's ac_on_off value, or derive from numb_units_on
+                if zone_ac_on_off_col in zone_wide_df.columns:
+                    base_df[f"{unit_name}_OnOFF"] = zone_wide_df[
+                        zone_ac_on_off_col
+                    ].fillna("OFF")
+                elif zone_numb_units_on_col in zone_wide_df.columns:
+                    # Convert numb_units_on to OnOFF string
+                    base_df[f"{unit_name}_OnOFF"] = zone_wide_df[
+                        zone_numb_units_on_col
+                    ].apply(lambda x: "ON" if pd.notna(x) and float(x) > 0 else "OFF")
+                else:
+                    base_df[f"{unit_name}_OnOFF"] = "OFF"
+
+                # Mode: Use zone's mode value, or set to OFF if OnOFF is OFF
+                if zone_mode_col in zone_wide_df.columns:
+                    mode_values = zone_wide_df[zone_mode_col].copy()
+                    # If OnOFF is OFF, set Mode to OFF
+                    if f"{unit_name}_OnOFF" in base_df.columns:
+                        mode_values = mode_values.where(
+                            base_df[f"{unit_name}_OnOFF"] != "OFF", "OFF"
+                        )
+                    base_df[f"{unit_name}_Mode"] = mode_values.fillna("OFF")
+                else:
+                    base_df[f"{unit_name}_Mode"] = "OFF"
+
+                # SetTemp: Use zone's set_temp value
+                if zone_set_temp_col in zone_wide_df.columns:
+                    base_df[f"{unit_name}_SetTemp"] = zone_wide_df[zone_set_temp_col]
+                else:
+                    base_df[f"{unit_name}_SetTemp"] = None
+
+                # FanSpeed: Use zone's fan_speed value
+                if zone_fan_speed_col in zone_wide_df.columns:
+                    base_df[f"{unit_name}_FanSpeed"] = zone_wide_df[zone_fan_speed_col]
+                else:
+                    base_df[f"{unit_name}_FanSpeed"] = None
+
+        # Sort by Date Time
+        base_df = base_df.sort_values("Date Time").reset_index(drop=True)
+
+        logging.info(
+            f"Converted to unit format: {len(base_df)} rows, {len(base_df.columns)} columns"
+        )
+
+        return base_df
+        

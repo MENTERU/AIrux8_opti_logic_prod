@@ -1,12 +1,10 @@
 services:
   # Backend
-  job-airux8-optimize: &job-airux8-optimize
-    container_name: job-airux8-optimize
+  svc-airux8-optimize: &svc-airux8-optimize
+    container_name: svc-airux8-optimize
     build:
       context: .
       dockerfile: Dockerfile
-      cache_from:
-        - airux8_opti_logic-job-airux8-optimize:latest
     volumes:
       - .:/app
     working_dir: /app

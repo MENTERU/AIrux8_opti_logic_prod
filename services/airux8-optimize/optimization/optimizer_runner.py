@@ -245,6 +245,26 @@ class OptimizerRunner:
             self.results["start_date"] = start_date
             self.results["end_date"] = end_date
 
+            # Also generate unit-level format
+            try:
+                unit_result_df = self.optimizer.get_unit_format(
+                    result_df, self.master_data
+                )
+                if not unit_result_df.empty:
+                    self.results["optimization_result_units"] = unit_result_df
+                    print(
+                        f"[OptimizerRunner] Unit-level optimization result generated: {len(unit_result_df)} results"
+                    )
+                else:
+                    print(
+                        "[OptimizerRunner] Warning: Unit-level optimization result is empty"
+                    )
+            except Exception as e:
+                print(
+                    f"[OptimizerRunner] Warning: Failed to generate unit-level format: {e}"
+                )
+                # Don't fail the whole optimization if unit format generation fails
+
             print(
                 f"[OptimizerRunner] Zone optimization completed successfully: {len(result_df)} results"
             )
@@ -270,8 +290,11 @@ class OptimizerRunner:
             DataFrame with '_hist_' columns removed
         """
         columns_to_keep = [
-            column for column in dataframe.columns if "_hist_" not in column
+            column
+            for column in dataframe.columns
+            if not any(substring in column for substring in ["_hist_", "_power", "_indoor_temp"])
         ]
+
         filtered_dataframe = dataframe[columns_to_keep].copy()
         removed_count = len(dataframe.columns) - len(filtered_dataframe.columns)
         if removed_count > 0:
@@ -354,15 +377,15 @@ class OptimizerRunner:
         self, start_date: str = None, end_date: str = None, filename: str = None
     ) -> str:
         """
-        Save optimization results to CSV.
+        Save optimization results to CSV (both zone-level and unit-level if available).
 
         Args:
             start_date: Start date in YYYY-MM-DD format (uses result data if None)
             end_date: End date in YYYY-MM-DD format (defaults to start_date if not provided)
-            filename: Optional custom CSV filename
+            filename: Optional custom CSV filename (for zone-level output)
 
         Returns:
-            Path to the saved CSV file
+            Path to the saved zone-level CSV file
         """
         if "optimization_result" not in self.results:
             raise ValueError("No optimization results to save. Run optimization first.")
@@ -381,13 +404,13 @@ class OptimizerRunner:
             # Convert dates to YYYYMMDD format
             start_date_formatted = start_date.replace("-", "")
             end_date_formatted = end_date.replace("-", "")
-            filename = f"schedule_{start_date_formatted}_{end_date_formatted}.csv"
+            filename = f"zone_schedule_{start_date_formatted}_{end_date_formatted}.csv"
 
         output_logical_path = f"04_PlanningData/{self.store_name}/{filename}"
 
-        # Save results via storage with explicit error handling
+        # Save zone-level results via storage with explicit error handling
         print(
-            f"[OptimizerRunner] Saving optimization results to storage path: {output_logical_path}"
+            f"[OptimizerRunner] Saving zone-level optimization results to storage path: {output_logical_path}"
         )
         try:
             storage.write_csv(self.results["optimization_result"], output_logical_path)
@@ -397,7 +420,37 @@ class OptimizerRunner:
             )
             raise
 
-        print(f"[OptimizerRunner] Optimization results saved to: {output_logical_path}")
+        print(
+            f"[OptimizerRunner] Zone-level optimization results saved to: {output_logical_path}"
+        )
+
+        # Also save unit-level results if available
+        if "optimization_result_units" in self.results:
+            # Generate unit-level filename
+            start_date_formatted = start_date.replace("-", "")
+            end_date_formatted = end_date.replace("-", "")
+            unit_filename = (
+                f"unit_schedule_{start_date_formatted}_{end_date_formatted}.csv"
+            )
+            unit_output_logical_path = (
+                f"04_PlanningData/{self.store_name}/{unit_filename}"
+            )
+
+            print(
+                f"[OptimizerRunner] Saving unit-level optimization results to storage path: {unit_output_logical_path}"
+            )
+            try:
+                storage.write_csv(
+                    self.results["optimization_result_units"], unit_output_logical_path
+                )
+                print(
+                    f"[OptimizerRunner] Unit-level optimization results saved to: {unit_output_logical_path}"
+                )
+            except Exception as error:
+                print(
+                    f"[OptimizerRunner] Warning: Failed to save unit-level results to {unit_output_logical_path}: {error}"
+                )
+                # Don't raise - zone-level results are already saved
 
         # Also upload to Google Drive (only when running on GCS/production)
         backend = os.getenv("STORAGE_BACKEND", "local").lower()
@@ -408,12 +461,30 @@ class OptimizerRunner:
                 )
             except Exception as error:
                 print(
-                    f"[OptimizerRunner] Warning: Failed to upload to Google Drive: {error}"
+                    f"[OptimizerRunner] Warning: Failed to upload zone-level schedule to Google Drive: {error}"
                 )
                 # Don't raise - we still want to return the storage path even if GDrive fails
+
+            # Also upload unit-level schedule to Google Drive if available
+            if "optimization_result_units" in self.results:
+                try:
+                    start_date_formatted = start_date.replace("-", "")
+                    end_date_formatted = end_date.replace("-", "")
+                    unit_filename = (
+                        f"unit_schedule_{start_date_formatted}_{end_date_formatted}.csv"
+                    )
+                    self._upload_to_google_drive(
+                        self.results["optimization_result_units"], unit_filename
+                    )
+                except Exception as error:
+                    print(
+                        f"[OptimizerRunner] Warning: Failed to upload unit-level schedule to Google Drive: {error}"
+                    )
+                    # Don't raise - zone-level upload may have succeeded
         else:
             print(
                 f"[OptimizerRunner] Skipping Google Drive upload (running locally with STORAGE_BACKEND={backend})"
             )
 
         return output_logical_path
+        

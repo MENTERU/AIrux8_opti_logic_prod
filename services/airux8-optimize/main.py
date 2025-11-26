@@ -1,7 +1,7 @@
 # =============================================================================
 # エアコン最適化システム - 実行サンプル
 # =============================================================================
-# TODO: Devide into mutliple services
+
 # (e.g. services/svc-airux8-optimize-data-scraping on GCP Cloud Run)
 import argparse
 import logging
@@ -59,11 +59,14 @@ def _resolve_weather_api_key() -> str:
 @app.post("/execute_optimization_pipeline")
 def execute_optimization_pipeline():
     """This endpoint is used to execute the optimization pipeline.
-    It will be triggered by GCS event when preprocessed data is uploaded.
+    It will be triggered by GCS event when preprocessed data is uploaded. 
+    Or by Cloud Scheduler to run daily.
 
     Args:
         event: dict - GCS event
-    Returns: JSONResponse"""
+    Returns: 
+        JSONResponse: JSON response
+    """
     # TODO: Implement this check later. For now, we will use Cloud Scheduler to trigger
     # bucket_name = event.get("bucket")
     # file_name = event.get("name")
