@@ -99,8 +99,49 @@ jobs:
                 --set-env-vars=PROJECT_ID=${{ vars.PROJECT_ID }},BUCKET_NAME=${{ vars.BUCKET_NAME }}
 
             elif [ "$dir_lower" = "trass-data-loader" ]; then
-              
-
+              gcloud run jobs deploy $JOB_NAME \
+                --region=${{ vars.REGION }} \
+                --image="$IMAGE_NAME" \
+                --service-account=${{ vars.JOB_TRASS_DATA_LOADER_SA }} \
+                --task-timeout=1200s \
+                --set-env-vars "PROJECT_ID=${{ vars.PROJECT_ID }}" \
+                --set-env-vars "BUCKET_NAME=${{ vars.BUCKET_NAME }}" \
+                --set-env-vars "START_DATE=" \
+                --set-env-vars "END_DATE=" \
+                --set-env-vars "INPUT_DATA_PATH=${{ vars.DATA_LOADER_INPUT_DATA_PATH }}" \
+                --set-env-vars "LOADED_DATA_PATH=${{ vars.DATA_LOADER_LOADED_DATA_PATH }}" \
+              # Check if scheduler job exists
+              if gcloud scheduler jobs describe job-$dir_lower-scheduler --location=${{ vars.REGION }} 2>/dev/null; then
+                echo "Updating existing scheduler job..."
+                gcloud scheduler jobs update http job-$dir_lower-scheduler \
+                  --location="${{ vars.REGION }}" \
+                  --schedule="0 5 * * *" \
+                  --time-zone="Asia/Tokyo" \
+                  --uri="https://${{ vars.REGION }}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${{ vars.PROJECT_ID }}/jobs/$IMAGE_NAME:run" \
+                  --http-method="POST" \
+                  --oauth-service-account-email="${{ vars.JOB_TRASS_DATA_LOADER_SA }}" \
+                  --oauth-token-scope="https://www.googleapis.com/auth/cloud-platform" \
+                  --description="Scheduler job that triggers $IMAGE_NAME everyday at 05:00 (JST)" \
+                  --attempt-deadline=300s \
+                  --min-backoff=60s \
+                  --max-backoff=60s \
+                  --max-retry-duration=300s
+              else
+                echo "Creating new scheduler job..."
+                gcloud scheduler jobs create http job-$dir_lower-scheduler \
+                  --location="${{ vars.REGION }}" \
+                  --schedule="0 5 * * *" \
+                  --time-zone="Asia/Tokyo" \
+                  --uri="https://${{ vars.REGION }}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${{ vars.PROJECT_ID }}/jobs/$IMAGE_NAME:run" \
+                  --http-method="POST" \
+                  --oauth-service-account-email="${{ vars.JOB_TRASS_DATA_LOADER_SA }}" \
+                  --oauth-token-scope="https://www.googleapis.com/auth/cloud-platform" \
+                  --description="Scheduler job that triggers $IMAGE_NAME everyday at 05:00 (JST)" \
+                  --attempt-deadline=300s \
+                  --min-backoff=60s \
+                  --max-backoff=60s \
+                  --max-retry-duration=300s
+              fi
           done
 
 
