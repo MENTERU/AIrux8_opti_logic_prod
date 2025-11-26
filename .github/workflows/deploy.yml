@@ -71,8 +71,8 @@ jobs:
           for dir in $CHANGED_JOBS; do
             dir_lower=$(echo "$dir" | tr '[:upper:]' '[:lower:]')
             
-            # Skip if directory doesn't exist (renamed/deleted services)
-            if [ ! -d "./services/$dir" ]; then
+            # Skip if directory doesn't exist (renamed/deleted jobs)
+            if [ ! -d "./jobs/$dir" ]; then
               echo "Skipping $dir - directory does not exist (likely renamed or deleted)"
               continue
             fi
@@ -99,8 +99,9 @@ jobs:
                 --set-env-vars=PROJECT_ID=${{ vars.PROJECT_ID }},BUCKET_NAME=${{ vars.BUCKET_NAME }}
 
             elif [ "$dir_lower" = "trass-data-loader" ]; then
-              
-
+              # TODO: Add trass-data-loader deployment configuration
+              echo "trass-data-loader deployment not yet configured"
+            fi
           done
 
 
@@ -151,7 +152,37 @@ jobs:
                 --max-instances=1 \
                 --set-env-vars=STORAGE_BACKEND=gcs,PROJECT_ID=${{ vars.PROJECT_ID }},BUCKET_NAME=${{ vars.BUCKET_NAME }},CLEA_OUT_GDRIVE_FOLDER_ID=${{ vars.CLEA_OUT_GDRIVE_FOLDER_ID }} \
                 --no-allow-unauthenticated \
-                --ingress=internal    
+                --ingress=internal
+              # Get Cloud Run service URL
+              SERVICE_URL=$(gcloud run services describe $SVC_NAME --region=${{ vars.REGION }} --format="value(status.url)")
+              SCHEDULER_JOB_NAME=svc-${dir_lower}-${{ vars.DEV_ENV }}
+              
+              # Check if scheduler job exists
+              if gcloud scheduler jobs describe $SCHEDULER_JOB_NAME --location=${{ vars.REGION }} 2>/dev/null; then
+                echo "Updating existing scheduler job..."
+                gcloud scheduler jobs update http $SCHEDULER_JOB_NAME \
+                  --location="${{ vars.REGION }}" \
+                  --schedule="0 1 * * *" \
+                  --time-zone="Asia/Tokyo" \
+                  --uri="$SERVICE_URL/execute_optimization_pipeline" \
+                  --oidc-token-audience="$SERVICE_URL/execute_optimization_pipeline" \
+                  --http-method="POST" \
+                  --oidc-service-account-email="${{ vars.SVC_AIRUX8_OPTIMIZE_SA }}" \
+                  --description="Run svc-airux8-optimize daily" \
+              else
+                echo "Creating new scheduler job..."
+                gcloud scheduler jobs create http $SCHEDULER_JOB_NAME \
+                  --location="${{ vars.REGION }}" \
+                  --schedule="0 1 * * *" \
+                  --time-zone="Asia/Tokyo" \
+                  --uri="$SERVICE_URL/execute_optimization_pipeline" \
+                  --oidc-token-audience="$SERVICE_URL/execute_optimization_pipeline" \
+                  --http-method="POST" \
+                  --oidc-service-account-email="${{ vars.SVC_AIRUX8_OPTIMIZE_SA }}" \
+                  --description="Run svc-airux8-optimize daily"
+              fi
+            fi
+            
             
           done
 
