@@ -59,7 +59,8 @@ def _resolve_weather_api_key() -> str:
 @app.post("/execute_optimization_pipeline")
 def execute_optimization_pipeline():
     """This endpoint is used to execute the optimization pipeline.
-    It will be triggered by GCS event when preprocessed data is uploaded.
+    It will be triggered by GCS event when preprocessed data is uploaded. 
+    Or by Cloud Scheduler to run daily.
 
     Args:
         event: dict - GCS event
