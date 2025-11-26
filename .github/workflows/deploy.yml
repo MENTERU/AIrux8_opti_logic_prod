@@ -36,6 +36,12 @@ jobs:
         run: |
           gcloud auth configure-docker ${{ vars.REGION }}-docker.pkg.dev
 
+      - name: Set up SSH key for BuildKit
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.MENTERU_TOOLS_DEPLOY_KEY }}" > ~/.ssh/menteru_tools_deploy_key
+          chmod 600 ~/.ssh/menteru_tools_deploy_key
+
 
       # 🔹 Detect Changed Functions
       - name: Detect Changed Functions
@@ -83,7 +89,7 @@ jobs:
             echo "Building and deploying $JOB_NAME..."
 
             # Build and push Docker image
-            docker buildx build --platform linux/amd64 -t $IMAGE_NAME . --push
+            DOCKER_BUILDKIT=1 docker buildx build --platform linux/amd64 --ssh default=~/.ssh/menteru_tools_deploy_key -t $IMAGE_NAME ./jobs/$dir --push
             echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
 
             # Deploy to Cloud Run Job

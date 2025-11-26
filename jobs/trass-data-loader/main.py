@@ -7,6 +7,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import pytz
 from config.config import *
 from config.config_gcp import GCPEnv
 from menteru_tools.gcp_service import storage
@@ -27,8 +28,8 @@ def dates_within_filename_range(
     """
     try:
         # Convert input strings to datetime objects
-        start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
-        end_date = datetime.strptime(end_date_str, "%Y-%m-%d")
+        start_date = datetime.strptime(start_date_str, "%Y-%m-%d %H:%M:%S")
+        end_date = datetime.strptime(end_date_str, "%Y-%m-%d %H:%M:%S")
 
         # Normalize input range
         input_start = min(start_date, end_date)
@@ -43,11 +44,13 @@ def dates_within_filename_range(
         file_end = datetime.strptime(match.group(2), "%Y-%m-%d")
 
         # Check if ranges overlap
-        return input_start <= file_end and input_end >= file_start
+        return (
+            file_start <= input_start <= file_end or file_start <= input_end <= file_end
+        )
 
     except Exception as e:
         logger.error(f"Error processing filename {filename}: {e}")
-        return False
+        raise
 
 
 def local_files_list(path: str) -> List[str]:
@@ -99,6 +102,7 @@ def load_raw(
         f"Loaded: IDU={idu.shape if idu is not None else 'None'} | "
         f"ODU={odu.shape if odu is not None else 'None'}"
     )
+
     return idu, odu
 
 
@@ -142,7 +146,9 @@ def unify_datetime(
     return df, col
 
 
-def compose_idu(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+def compose_idu(
+    df: pd.DataFrame, start_date: str, end_date: str
+) -> Optional[pd.DataFrame]:
     """Clean and standardize IDU dataset."""
     if df is None:
         return None
@@ -178,13 +184,20 @@ def compose_idu(df: pd.DataFrame) -> Optional[pd.DataFrame]:
         ]
     ]
 
+    out_df = out_df[
+        (out_df["measured_at"] >= pd.to_datetime(start_date))
+        & (out_df["measured_at"] <= pd.to_datetime(end_date))
+    ]
+
     out_df["ac_on_off"] = np.where(out_df["ac_on_off"] == "OFF", 0, 1)
 
     logger.info("IDU composition complete.")
     return out_df
 
 
-def compose_odu(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+def compose_odu(
+    df: pd.DataFrame, start_date: str, end_date: str
+) -> Optional[pd.DataFrame]:
     """Clean and standardize ODU dataset and compute energy."""
     if df is None:
         return None
@@ -206,6 +219,11 @@ def compose_odu(df: pd.DataFrame) -> Optional[pd.DataFrame]:
 
     out_df = out_df[["measured_at", "odu_id", "total_kwh"]]
 
+    out_df = out_df[
+        (out_df["measured_at"] >= pd.to_datetime(start_date))
+        & (out_df["measured_at"] <= pd.to_datetime(end_date))
+    ]
+
     logger.info("ODU composition complete.")
     return out_df
 
@@ -216,7 +234,9 @@ def main():
 
         logger.info("🚀 Starting data loading pipeline...")
 
-        now_dt = datetime.now()
+        tokyo_tz = pytz.timezone("Asia/Tokyo")
+
+        now_dt = datetime.now(tokyo_tz)
 
         end_date = (
             GCPEnv.END_DATE if GCPEnv.END_DATE else now_dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -225,13 +245,17 @@ def main():
         start_date = (
             GCPEnv.START_DATE
             if GCPEnv.START_DATE
-            else (now_dt - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+            else (
+                datetime.strptime(end_date, "%Y-%m-%d %H:%M:%S") - timedelta(days=1)
+            ).strftime("%Y-%m-%d %H:%M:%S")
         )
 
         if datetime.strptime(start_date, "%Y-%m-%d %H:%M:%S") > datetime.strptime(
             end_date, "%Y-%m-%d %H:%M:%S"
         ):
             raise Exception("Input dates inconsistent, must be START_DATE <= END_DATE")
+
+        logger.info(f"Loading data from {start_date} to {end_date}...")
 
         gc_storage_obj = storage.Storage(
             project_id=GCPEnv.PROJECT_ID, bucket_id=GCPEnv.BUCKET_ID
@@ -276,8 +300,8 @@ def main():
             idu_raw, odu_raw = load_raw(
                 input_prefix, gc_storage_obj, start_date, end_date
             )
-            idu = compose_idu(idu_raw)
-            odu = compose_odu(odu_raw)
+            idu = compose_idu(idu_raw, start_date, end_date)
+            odu = compose_odu(odu_raw, start_date, end_date)
 
             if idu is not None:
                 idu_output = os.path.join(output_prefix, f"{IDU_FILENAME_PREFIX}.csv")

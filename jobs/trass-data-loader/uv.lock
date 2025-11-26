@@ -702,6 +702,7 @@ dependencies = [
     { name = "menteru-tools" },
     { name = "numpy" },
     { name = "pandas" },
+    { name = "pytz" },
 ]
 
 [package.metadata]
@@ -709,6 +710,7 @@ requires-dist = [
     { name = "menteru-tools", git = "https://github.com/MENTERU/menteru_tools.git?rev=main" },
     { name = "numpy", specifier = ">=2.3.4" },
     { name = "pandas", specifier = ">=2.3.3" },
+    { name = "pytz", specifier = ">=2025.2" },
 ]
 
 [[package]]
