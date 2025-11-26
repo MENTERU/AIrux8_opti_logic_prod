@@ -63,7 +63,8 @@ def execute_optimization_pipeline():
 
     Args:
         event: dict - GCS event
-    Returns: JSONResponse"""
+    Returns: 
+    """
     # TODO: Implement this check later. For now, we will use Cloud Scheduler to trigger
     # bucket_name = event.get("bucket")
     # file_name = event.get("name")
