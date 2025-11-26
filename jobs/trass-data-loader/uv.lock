@@ -946,7 +946,7 @@ wheels = [
 [[package]]
 name = "menteru-tools"
 version = "0.1.0"
-source = { git = "https://github.com/MENTERU/menteru_tools.git?rev=main#5a8deb9f3d5370af565b630d700995ef30d6269b" }
+source = { git = "https://github.com/MENTERU/menteru_tools.git?rev=v0.2.0#f6dd95331dbc7350212e773e63346afc466dfcc3" }
 dependencies = [
     { name = "annotated-types" },
     { name = "attrs" },
@@ -1965,7 +1965,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "menteru-tools", git = "https://github.com/MENTERU/menteru_tools.git?rev=main" },
+    { name = "menteru-tools", git = "https://github.com/MENTERU/menteru_tools.git?rev=v0.2.0" },
     { name = "numpy", specifier = ">=2.3.4" },
     { name = "pandas", specifier = ">=2.3.3" },
     { name = "pytz", specifier = ">=2025.2" },
