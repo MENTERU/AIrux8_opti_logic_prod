@@ -1,7 +1,7 @@
 # =============================================================================
 # エアコン最適化システム - 実行サンプル
 # =============================================================================
-# TODO: Devide into mutliple services
+
 # (e.g. services/svc-airux8-optimize-data-scraping on GCP Cloud Run)
 import argparse
 import logging
