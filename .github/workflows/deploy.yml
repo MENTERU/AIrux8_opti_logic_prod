@@ -88,8 +88,10 @@ jobs:
             IMAGE_NAME=${{ vars.REGION }}-docker.pkg.dev/${{ vars.PROJECT_ID }}/${{ vars.OPTIMIZE_ARTIFACT_REPO }}/job-$dir_lower:${{ vars.DEV_ENV }}
             echo "Building and deploying $JOB_NAME..."
 
-            # Build and push Docker image
+            # Build and push Docker image          
+            cd jobs/$dir
             DOCKER_BUILDKIT=1 docker buildx build --platform linux/amd64 --ssh default=~/.ssh/menteru_tools_deploy_key -t $IMAGE_NAME ./jobs/$dir --push
+            cd ../..
             echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
 
             # Deploy to Cloud Run Job
@@ -148,6 +150,7 @@ jobs:
                   --max-backoff=60s \
                   --max-retry-duration=300s
               fi
+            fi
           done
 
 
