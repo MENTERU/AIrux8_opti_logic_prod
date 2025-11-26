@@ -129,11 +129,11 @@ jobs:
                   --location="${{ vars.REGION }}" \
                   --schedule="0 5 * * *" \
                   --time-zone="Asia/Tokyo" \
-                  --uri="https://${{ vars.REGION }}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${{ vars.PROJECT_ID }}/jobs/$IMAGE_NAME:run" \
+                  --uri="https://${{ vars.REGION }}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${{ vars.PROJECT_ID }}/jobs/$JOB_NAME:run" \
                   --http-method="POST" \
                   --oauth-service-account-email="${{ vars.JOB_TRASS_DATA_LOADER_SA }}" \
                   --oauth-token-scope="https://www.googleapis.com/auth/cloud-platform" \
-                  --description="Scheduler job that triggers $IMAGE_NAME everyday at 05:00 (JST)" \
+                  --description="Scheduler job that triggers $JOB_NAME everyday at 05:00 (JST)" \
                   --attempt-deadline=300s \
                   --min-backoff=60s \
                   --max-backoff=60s \
@@ -144,11 +144,11 @@ jobs:
                   --location="${{ vars.REGION }}" \
                   --schedule="0 5 * * *" \
                   --time-zone="Asia/Tokyo" \
-                  --uri="https://${{ vars.REGION }}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${{ vars.PROJECT_ID }}/jobs/$IMAGE_NAME:run" \
+                  --uri="https://${{ vars.REGION }}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${{ vars.PROJECT_ID }}/jobs/$JOB_NAME:run" \
                   --http-method="POST" \
                   --oauth-service-account-email="${{ vars.JOB_TRASS_DATA_LOADER_SA }}" \
                   --oauth-token-scope="https://www.googleapis.com/auth/cloud-platform" \
-                  --description="Scheduler job that triggers $IMAGE_NAME everyday at 05:00 (JST)" \
+                  --description="Scheduler job that triggers $JOB_NAME everyday at 05:00 (JST)" \
                   --attempt-deadline=300s \
                   --min-backoff=60s \
                   --max-backoff=60s \
