@@ -30,9 +30,7 @@ RUN mkdir -p /root/.ssh && \
 
 # Install package from private repo + requirements using BuildKit SSH mount
 # NOTE: this requires you to build with --ssh (local) or --ssh forwarded (CI)
-RUN --mount=type=ssh pip install --prefix=/install --no-cache-dir \
-        git+ssh://git@github.com/MENTERU/menteru_tools.git@5a8deb9f3d5370af565b630d700995ef30d6269b && \
-    pip install --prefix=/install --no-cache-dir -r requirements.txt
+RUN --mount=type=ssh pip install --prefix=/install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY . .
