@@ -45,8 +45,8 @@ def dates_within_filename_range(
     """
     try:
         # Convert input strings to datetime objects for comparison
-        start_date = datetime.strptime(start_date_str, "%Y-%m-%d %H:%M:%S")
-        end_date = datetime.strptime(end_date_str, "%Y-%m-%d %H:%M:%S")
+        start_date = datetime.strptime(start_date_str, "%Y-%m-%d %H:%M:%S").date()
+        end_date = datetime.strptime(end_date_str, "%Y-%m-%d %H:%M:%S").date()
 
         # Normalize input range to ensure start <= end (handling potential user error)
         input_start = min(start_date, end_date)
@@ -58,8 +58,8 @@ def dates_within_filename_range(
             # If the filename doesn't contain the expected date pattern, we skip it.
             return False
 
-        file_start = datetime.strptime(match.group(1), "%Y-%m-%d")
-        file_end = datetime.strptime(match.group(2), "%Y-%m-%d")
+        file_start = datetime.strptime(match.group(1), "%Y-%m-%d").date()
+        file_end = datetime.strptime(match.group(2), "%Y-%m-%d").date()
 
         # Check for intersection between the requested interval and the file's interval
         return (
