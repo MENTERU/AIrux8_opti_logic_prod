@@ -105,11 +105,14 @@ class AirControlInit:
     """thunkに渡す初期化素材（プロセス間でpickle可能な形に）"""
 
     # モデル：Path(=joblib) か、ロード済みモデル（ロード済みは deepcopy で分岐）
-    model_or_path: str | Path | object
+    model_temp: str | Path | object
+    model_elec: str | Path | object
     base_df: pd.DataFrame
     start_term: pd.Timestamp
     end_term: pd.Timestamp
     weather_forecast: pd.DataFrame
+    unit_temp_range_list: list
+    target_temp_list: list
     reward_params: RewardParams | None = None
 
 
@@ -143,17 +146,22 @@ def make_env_factory_aircontrol(
 
     def _thunk():
         # 1) モデルをこのプロセス空間で用意
-        model = _ensure_model(init_copy.model_or_path)
-
+        model_temp = _ensure_model(init_copy.model_temp)
+        model_elec = _ensure_model(init_copy.model_elec)
+        unit_temp_range_list = init_copy.unit_temp_range_list
+        target_temp_list = init_copy.target_temp_list
         # 2) Env を生成（元クラスの挙動は変更しない）
         env = env_cls(
-            model=model,
+            model_temp=model_temp,
+            model_elec=model_elec,
             base_df=init_copy.base_df,
             start_term=init_copy.start_term,
             end_term=init_copy.end_term,
             weather_forecast=init_copy.weather_forecast,
             reward_params=init_copy.reward_params or RewardParams(),
             enable_obs_rms=enable_obs_rms,
+            unit_temp_range_list=unit_temp_range_list,
+            target_temp_list=target_temp_list,
         )
         # 3) 任意のシード設定
         if seed is not None:

@@ -228,6 +228,7 @@ class MultiDeviceQuadHeadDiscreteActor(nn.Module):
         self,
         logits_T: torch.Tensor,  # [B, n_devices, n_temp]
         temp_idx_BD: torch.Tensor,  # [B, n_devices]
+        temp_range_idx_list: list,
         K: int,  # 半径（±K を許可）
     ) -> torch.Tensor:
         B, D, Ktemp = logits_T.shape
@@ -239,32 +240,34 @@ class MultiDeviceQuadHeadDiscreteActor(nn.Module):
             oh = torch.zeros_like(allow)
             oh.scatter_(-1, idx, True)
             allow |= oh
+        # デバイスごとに設定温度の幅を適応。
+        B, D, Ktemp = allow.shape  # バッチ, デバイスの数, 温度リストの次元数
+        # --- temp_range_idx_list: List[(low_idx, high_idx)] (len = D) をテンソルに ---
+
+        ranges = torch.as_tensor(temp_range_idx_list, device=allow.device)
+        if ranges.ndim == 3:
+            # Batch 次元が乗っているので 0 番目だけ使う（今は全 env 同じレンジの前提）
+            ranges = ranges[0]  # → shape (8, 2)
+        elif ranges.ndim != 2:
+            raise ValueError(f"unexpected temp_range_idx_list shape: {ranges.shape}")
+        # rangesのshapeは[D,2]の形である
+        low_idx = ranges[:, 0].view(1, D, 1)
+        hight_idx = ranges[:, 1].view(1, D, 1)
+        idx = torch.arange(Ktemp, device=allow.device).view(
+            1, 1, Ktemp
+        )  # [1,1,Ktemp]のlogitの形状に変形
+        oh = (idx >= low_idx) & (idx <= hight_idx)
+        allow = allow & oh
+
         # 許可外を -inf へ
         masked = torch.where(allow, logits_T, torch.full_like(logits_T, -1e30))
-        return masked
+        invalid = (~allow).all(dim=-1)  # [B, D]
+        if invalid.any():
+            print(
+                "[WARN] no valid temp class for some (B,D):",
+                invalid.nonzero(as_tuple=False),
+            )
 
-    def _mask_temp_logits_pm1(self, logits_T: torch.Tensor, temp_idx_BD: torch.Tensor):
-        """
-        logits_T: [B, n_devices, n_temp]
-        temp_idx_BD: [B, n_devices]  現在の温度インデックス
-        許可集合: {idx-1, idx, idx+1}（範囲内にクリップ）
-        許可以外のロジットを -1e30 にする（確率≈0）
-        """
-        B, D, K = logits_T.shape
-        # 許可インデックスを3パターン作る
-        idxs = []
-        for delta in (-1, 0, 1):
-            idx = torch.clamp(temp_idx_BD + delta, 0, K - 1)  # [B, D]
-            idxs.append(idx)
-        # one-hot を作って3つの許可を OR（max）でまとめる
-        allow = torch.zeros((B, D, K), device=logits_T.device, dtype=torch.bool)
-        for idx in idxs:
-            oh = torch.zeros((B, D, K), device=logits_T.device, dtype=torch.bool)
-            # バッチ次元/B とデバイス次元/D の位置に 1 を scatter
-            oh.scatter_(-1, idx.unsqueeze(-1), True)
-            allow |= oh
-        # マスク適用
-        masked = torch.where(allow, logits_T, torch.full_like(logits_T, -1e30))
         return masked
 
     def _normalize_temp_idx(self, cur, B, device):
@@ -309,19 +312,38 @@ class MultiDeviceQuadHeadDiscreteActor(nn.Module):
         m = self.head_mode(feat).view(B, self.n_devices, self.n_mode)
         w = self.head_wind(feat).view(B, self.n_devices, self.n_wind)
         o = self.head_on_off(feat).view(B, self.n_devices, self.n_onoff)
-
+        """ 設定温度について制約を付加する """
         # ---- ここで info.current_temp_index を読み、±1 以外を事前にマスク ----
         cur_idx = None
-        # Tianshouでは batch.info に入れておくのが定石
-        if (
-            hasattr(batch, "info")
-            and batch.info is not None
-            and hasattr(batch.info, "current_temp_index")
-        ):
-            cur_idx = batch.info.current_temp_index
-        # 予備: policy.forward(..., info=Batch(current_temp_index=...)) として渡された場合
-        elif info is not None and hasattr(info, "current_temp_index"):
-            cur_idx = info.current_temp_index
+        temp_range_idx_list = None
+
+        # 1) batch.info から取る（Batch or dict 両対応）
+        if hasattr(batch, "info") and batch.info is not None:
+            bi = batch.info
+            if isinstance(bi, dict):
+                if "current_temp_index" in bi:
+                    cur_idx = bi["current_temp_index"]
+                if "temp_range_idx_list" in bi:
+                    temp_range_idx_list = bi["temp_range_idx_list"]
+            else:
+                # Tianshou の Batch を想定
+                if hasattr(bi, "current_temp_index"):
+                    cur_idx = bi.current_temp_index
+                if hasattr(bi, "temp_range_idx_list"):
+                    temp_range_idx_list = bi.temp_range_idx_list
+
+        # 2) まだ足りないものがあれば、info 引数側を補助的に見る
+        if info is not None:
+            if isinstance(info, dict):
+                if cur_idx is None and "current_temp_index" in info:
+                    cur_idx = info["current_temp_index"]
+                if temp_range_idx_list is None and "temp_range_idx_list" in info:
+                    temp_range_idx_list = info["temp_range_idx_list"]
+            else:
+                if cur_idx is None and hasattr(info, "current_temp_index"):
+                    cur_idx = info.current_temp_index
+                if temp_range_idx_list is None and hasattr(info, "temp_range_idx_list"):
+                    temp_range_idx_list = info.temp_range_idx_list
 
         cur_idx = self._normalize_temp_idx(cur_idx, B, t.device)
         if cur_idx is not None:
@@ -329,7 +351,9 @@ class MultiDeviceQuadHeadDiscreteActor(nn.Module):
             valid_mask = (cur_idx >= 0) & (cur_idx < self.n_temp)  # [B, D]
             if valid_mask.any():
                 c = torch.clamp(cur_idx, 0, self.n_temp - 1)  # [B, D]
-                t_masked = self._mask_temp_logits_window(t, c, K=2)  # ±2 を許可
+                t_masked = self._mask_temp_logits_window(
+                    t, c, temp_range_idx_list, K=2
+                )  # ±2 を許可＆各デバイスごとの設定温度のマスクを適用
                 vm = valid_mask.unsqueeze(-1)  # [B, D, 1]
                 t = torch.where(vm, t_masked, t)
 

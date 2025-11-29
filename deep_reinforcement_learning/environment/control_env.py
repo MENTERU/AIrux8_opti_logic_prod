@@ -32,15 +32,23 @@ class RewardParams:
 
 
 class AirControlEnv(gym.Env):
+    """
+    unit_temp_range_list : モデルのカラムの順番とConstのunitの順番が対応しているかの確認を忘れずに
+    target_temp_list : モデルのカラムの順番とConstのunitの順番が対応しているかの確認を忘れずに
+    """
+
     def __init__(
         self,
-        model,
+        model_temp,
+        model_elec,
         base_df: pd.DataFrame,
         start_term: pd.Timestamp,
         end_term: pd.Timestamp,
         weather_forecast: pd.DataFrame,
         *,
         reward_params: RewardParams = RewardParams(),
+        unit_temp_range_list: list,  # [(設定温度下限, 設定温度上限) * ユニット台数]
+        target_temp_list: list,
     ):
         """注意: start_term = base_dfの最後の時刻 + 1 h であること。"""
         self.base_df = base_df
@@ -49,13 +57,9 @@ class AirControlEnv(gym.Env):
         self.end_term = end_term
         self.weather_forecast = weather_forecast
         self.reward_params = reward_params
-        self.kwh_ref, self.disc_ref = self._estimate_reward_scales(self.base_df)
-        if not np.isfinite(self.kwh_ref) or self.kwh_ref <= 0:
-            self.kwh_ref = 1.0
-        if not np.isfinite(self.disc_ref) or self.disc_ref <= 0:
-            self.disc_ref = 1.0
         # 予測器の前処理
-        self.model = model
+        self.model_temp = model_temp  # 室内温度を予測するモデル
+        self.model_elec = model_elec  # 室外機の消費電力量を予測するモデル
         self.builder = InputDataBuilderDP(
             days=7,
             lags_hours=(1,),
@@ -65,13 +69,16 @@ class AirControlEnv(gym.Env):
         self.builder.fit(base_df)
         self.builder.begin_online(base_df)
 
+        # 制御マスタからの情報を保存
+        self.unit_temp_range_list = unit_temp_range_list
+        self.target_temp_list = target_temp_list
+
         # 列グループ
         self.room_temp_cols = pick_cols(base_df, prefix="Indoor Temp")
         self.set_temp_cols = pick_cols(base_df, prefix="A/C Set Temperature")
         self.set_mode_cols = pick_cols(base_df, prefix="A/C Mode")
         self.set_fan_cols = pick_cols(base_df, prefix="A/C Fan Speed")
         self.set_onoff_cols = pick_cols(base_df, prefix="A/C ON/OFF")
-        self.kwh_cols = pick_cols(base_df, prefix="total_kwh__")
         self.weather_cols = list(weather_cols)  # ← 定数をenvに保持
 
         # 観測の列順
@@ -195,7 +202,18 @@ class AirControlEnv(gym.Env):
         obs, info = self._extract_obs_info(base_df)
         return TBatch(obs=obs, info=TBatch(**info))
 
+    def _create_unit_control_master_dict(self):
+        self.unit_temp_idx_range_list = [
+            (self._nearest_settemp_index(low), self._nearest_settemp_index(high))
+            for low, high in self.unit_temp_range_list
+        ]
+        return dict(
+            temp_range_idx_list=self.unit_temp_idx_range_list,
+            target_temp_list=self.target_temp_list,
+        )
+
     def reset(self, *, seed: int | None = None, options: dict | None = None):
+        print("初期化中...")
         self.current_time = self.start_term
         super().reset(seed=seed)
         self.dp_builder = copy.deepcopy(self.builder)
@@ -206,94 +224,46 @@ class AirControlEnv(gym.Env):
             last[ctrl_cols] if set(ctrl_cols).issubset(last.index) else None
         )
         obs, info = self._extract_obs_info(self.base_df)
+        havc_master_info = self._create_unit_control_master_dict()
+        info.update(havc_master_info)
         return obs, info
-
-    def _estimate_reward_scales(self, df: pd.DataFrame) -> tuple[float, float]:
-        """ベース期間から報酬の基準スケール(kWh, 温度超過)の中央値を推定"""
-        df = df.sort_index()
-        # kWh 合計の尺度
-        kwh_cols = [c for c in df.columns if c.startswith("total_kwh__")]
-        if kwh_cols:
-            # 旧pandas互換: min_countを使わない
-            kwh_sum = df[kwh_cols].sum(axis=1, skipna=True)
-            kwh_ref = float(np.nanmedian(kwh_sum.to_numpy()))
-        else:
-            kwh_ref = 1.0
-
-        # 温度超過の尺度（不感帯差し引きの正部分）
-        set_cols = [c for c in df.columns if c.startswith("A/C Set Temperature__")]
-        indoor_cols = [c for c in df.columns if c.startswith("Indoor Temp.__")]
-        ind_map = {c.split("__", 1)[1]: c for c in indoor_cols if "__" in c}
-
-        diffs = []
-        p = self.reward_params
-        for sc in set_cols:
-            suf = sc.split("__", 1)[1] if "__" in sc else None
-            ic = ind_map.get(suf)
-            if ic is None:
-                continue
-            a = pd.to_numeric(df[ic], errors="coerce")
-            b = pd.to_numeric(df[sc], errors="coerce")
-            over = (a - b).abs() - p.deadband_c
-            over = over.where(over > 0, 0.0)
-            diffs.append(over)
-
-        if diffs:
-            disc_df = pd.concat(diffs, axis=1)
-            # 旧pandas互換: min_countを使わない。行平均はNaNを無視、全NaN行はNaNのまま。
-            disc_series = disc_df.mean(axis=1, skipna=True)
-            disc_ref = float(np.nanmedian(disc_series.to_numpy()))
-        else:
-            disc_ref = 1.0
-
-        return kwh_ref, disc_ref
 
     # --------- 報酬計算（最小ハイパラ版） ---------
     def calc_reward(self, pred_row: pd.Series) -> tuple[float, dict]:
-        p = self.reward_params
-
-        # kWh 合計
-        kwh_cols = [c for c in pred_row.index if c.startswith("total_kwh__")]
-        kwh = float(pred_row[kwh_cols].sum()) if kwh_cols else 0.0
-
-        # 快適性（不感帯超過の平均）
-        set_cols = [c for c in pred_row.index if c.startswith("A/C Set Temperature__")]
         indoor_cols = [c for c in pred_row.index if c.startswith("indoor_temp__")]
-        ind_map = {c.split("__", 1)[1]: c for c in indoor_cols if "__" in c}
+
+        # target_temp_list は [目標温度] * n台 のリスト想定
+        # → indoor_cols の並びと対応するようにしておくこと
         diffs = []
-        for sc in set_cols:
-            suf = sc.split("__", 1)[1] if "__" in sc else None
-            ic = ind_map.get(suf)
-            if ic is None:
-                continue
-            setT = float(pred_row[sc])
-            Tin = float(pred_row[ic])
-            over = abs(Tin - setT) - p.deadband_c
-            diffs.append(max(over, 0.0))
-        discomfort = float(np.mean(diffs)) if diffs else 0.0
+        per_unit_diff = {}
 
-        # === 自己スケーリング + tanh バウンド ===
-        kwh_hat = kwh / max(self.kwh_ref, 1e-6)
-        disc_hat = discomfort / max(self.disc_ref, 1e-6)
-        cost_term = p.alpha_cost * np.tanh(kwh_hat)
-        comfort_term = p.beta_comfort * np.tanh(disc_hat)
+        for col, targetT in zip(indoor_cols, self.target_temp_list):
+            Tin = float(pred_row[col])
+            diff = abs(Tin - float(targetT))
+            diffs.append(diff)
+            per_unit_diff[col] = diff
 
-        reward = -(cost_term + comfort_term)
+        if diffs:
+            # 平均絶対誤差
+            discomfort = float(np.mean(diffs))
+            # 目標温度に近いほど reward が大きく（0に近く）なる
+            reward = -discomfort
+        else:
+            # 室内温度が取れない場合はゼロ報酬
+            discomfort = 0.0
+            reward = 0.0
+
         details = dict(
             reward=reward,
-            kwh=kwh,
             discomfort=discomfort,
-            kwh_hat=kwh_hat,
-            disc_hat=disc_hat,
-            kwh_ref=self.kwh_ref,
-            disc_ref=self.disc_ref,
-            cost_term=cost_term,
-            comfort_term=comfort_term,
+            per_unit_diff=per_unit_diff,
+            target_temp_list=list(self.target_temp_list),
         )
         return reward, details
 
     # --------- 1ステップ進める ---------
     def step(self, action):
+        print("実行中...")
         # 入力の用意
         control_df = actions_to_frame(
             act_indices=action,
@@ -314,16 +284,27 @@ class AirControlEnv(gym.Env):
 
         # 特徴量 → 予測
         X = self.dp_builder.make_input_next(self.current_time, weather_df, control_df)
-
-        res_all = predict_full_period_with_residual_model(
-            model=self.model,
-            X_full=X,
-            model_target_names=list(self.model.y_cols),
-            wanted_target_cols=list(self.model.y_cols),
+        X_temp = X.loc[:, ~X.columns.str.startswith("lag1h__")]
+        indoor_temp_pred = predict_full_period_with_residual_model(
+            model=self.model_temp,
+            X_full=X_temp,
+            model_target_names=list(self.model_temp.y_cols),
+            wanted_target_cols=list(self.model_temp.y_cols),
             bl_prefix="bl__",
             add_back_baseline=True,
         )
-        pred_df = res_all["y_pred"]  # DataFrame(1, N)
+        indoor_temp_pred_df = indoor_temp_pred["y_pred"]  # DataFrame(1, N)
+        elec_consumption_pred = predict_full_period_with_residual_model(
+            model=self.model_elec,
+            X_full=X,
+            model_target_names=list(self.model_elec.y_cols),
+            wanted_target_cols=list(self.model_elec.y_cols),
+            bl_prefix="bl__",
+            add_back_baseline=True,
+        )
+        elec_consumption_pred_df = elec_consumption_pred["y_pred"]  # DataFrame(1, N)
+
+        pred_df = pd.concat([indoor_temp_pred_df, elec_consumption_pred_df], axis=1)
         env_df = pd.concat([control_df, pred_df], axis=1)
         env_df = pd.concat([env_df, weather_df], axis=1)
         pred_row = env_df.iloc[0]  # Series
@@ -340,6 +321,12 @@ class AirControlEnv(gym.Env):
         obs, info = self._extract_obs_info(env_df)
         # 追加情報
         info.update(rinfo)
+        info.update(
+            dict(
+                temp_range_idx_list=self.unit_temp_idx_range_list,
+                target_temp_list=self.target_temp_list,
+            )
+        )
         info["time"] = self.current_time
         if info_pred:
             info["predicted"] = info_pred
@@ -348,6 +335,7 @@ class AirControlEnv(gym.Env):
         truncated = False
         # 状態更新（DPに実績として取り込み、時間を+1h）
         self.update_state(pred_df)
+        print("1 Step done")
         return obs, reward, terminated, truncated, info
 
     def update_state(self, pred_df):

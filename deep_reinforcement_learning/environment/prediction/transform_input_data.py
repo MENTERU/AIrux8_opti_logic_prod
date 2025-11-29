@@ -345,10 +345,26 @@ def build_features_residualized(
     # 4) 天気: ★ bl__/res__ を作らない。必要なら“元値のみ”追加
     if include_weather_raw:
         if weather_cols is None:
-            candidates = ["Outdoor Temp.", "Outdoor Humidity", "Solar Radiation"]
-            weather_cols = [c for c in candidates if c in df.columns]
+            # ★ df 内で "Outdoor " から始まる列を自動検出（従来の候補も残すならここに足す）
+            candidates = [c for c in df.columns if c.startswith("Outdoor ")]
+            weather_cols = candidates
         if weather_cols:
-            parts.append(df[list(weather_cols)].copy().reindex(original_index))
+            weather_raw = df[list(weather_cols)].copy().reindex(original_index)
+            parts.append(weather_raw)
+
+            # === ここから追加部分: "Outdoor " から始まるカラムの前時刻との差分 ===
+            # Outdoor 系のカラムだけ取り出す
+            outdoor_cols = [c for c in weather_cols if c.startswith("Outdoor ")]
+            if outdoor_cols:
+                # 1 時間前との差分（X_t - X_{t-1}）
+                outdoor_diff = weather_raw[outdoor_cols] - weather_raw[
+                    outdoor_cols
+                ].shift(1)
+                # カラム名にプレフィックスを付ける（例: "Diff1h_Outdoor Temp."）
+                outdoor_diff.columns = [f"Diff1h_{c}" for c in outdoor_cols]
+                # インデックスを揃えて追加
+                outdoor_diff = outdoor_diff.reindex(original_index)
+                parts.append(outdoor_diff)
 
     # 5) 操作量（原値 + 派生特徴）
     if include_original_controls:
@@ -730,7 +746,16 @@ def _assemble_features_common(
     # 3) 追加の天気/操作量
     parts: list[pd.DataFrame] = [tf, res_feats]
     if include_weather_raw and (weather_info is not None):
-        parts.append(_ensure_dtindex(weather_info).reindex(ti))
+        wdf = _ensure_dtindex(weather_info).reindex(ti)
+        parts.append(wdf)
+
+        # "Outdoor " から始まるカラムだけを対象に、前時刻との差分を作る
+        outdoor_cols = [c for c in wdf.columns if c.startswith("Outdoor ")]
+        if outdoor_cols:
+            outdoor_diff = wdf[outdoor_cols] - wdf[outdoor_cols].shift(1)
+            outdoor_diff.columns = [f"Diff1h_{c}" for c in outdoor_cols]
+            outdoor_diff = outdoor_diff.reindex(ti)
+            parts.append(outdoor_diff)
     if include_original_controls and (control_values is not None):
         parts.append(_ensure_dtindex(control_values).reindex(ti))
 
