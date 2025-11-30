@@ -1,0 +1,57 @@
+{
+  "weights_root": "logs/aircontrol_ppo/Area1/20250910",
+  "policy_path": "logs/aircontrol_ppo/Area1/20250910/policy_best.pth",
+  "obs_rms": "logs/aircontrol_ppo/Area1/20250910/obs_rms_best.npz",
+  "base_csv": "data/base/hourly_filled.csv",
+  "weather_csv": "data/base/hourly_filled.csv",
+  "area": "Area1",
+  "temp_model_path": "./models/Area1__temp.joblib",
+  "elec_model_path": "./models/Area1__kwh.joblib",
+  "start_term": "2025-09-10 07:00:00",
+  "end_term": "2025-09-11 07:00:00",
+  "episode_len": 24,
+  "seed": 42,
+  "n_devices": 8,
+  "action_columns": {
+    "set": [
+      "A/C Set Temperature__E-10南2",
+      "A/C Set Temperature__E-11南3",
+      "A/C Set Temperature__E-12南4",
+      "A/C Set Temperature__E-13北1",
+      "A/C Set Temperature__E-14北2",
+      "A/C Set Temperature__E-15北3",
+      "A/C Set Temperature__E-16北4",
+      "A/C Set Temperature__E-9南1"
+    ],
+    "mode": [
+      "A/C Mode__E-10南2",
+      "A/C Mode__E-11南3",
+      "A/C Mode__E-12南4",
+      "A/C Mode__E-13北1",
+      "A/C Mode__E-14北2",
+      "A/C Mode__E-15北3",
+      "A/C Mode__E-16北4",
+      "A/C Mode__E-9南1"
+    ],
+    "fan": [
+      "A/C Fan Speed__E-10南2",
+      "A/C Fan Speed__E-11南3",
+      "A/C Fan Speed__E-12南4",
+      "A/C Fan Speed__E-13北1",
+      "A/C Fan Speed__E-14北2",
+      "A/C Fan Speed__E-15北3",
+      "A/C Fan Speed__E-16北4",
+      "A/C Fan Speed__E-9南1"
+    ],
+    "onoff": [
+      "A/C ON/OFF__E-10南2",
+      "A/C ON/OFF__E-11南3",
+      "A/C ON/OFF__E-12南4",
+      "A/C ON/OFF__E-13北1",
+      "A/C ON/OFF__E-14北2",
+      "A/C ON/OFF__E-15北3",
+      "A/C ON/OFF__E-16北4",
+      "A/C ON/OFF__E-9南1"
+    ]
+  }
+}

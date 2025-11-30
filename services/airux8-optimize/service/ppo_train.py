@@ -35,6 +35,8 @@ from input_info.crea_building_information import (
     CreaBuilding,
 )  # ← 実際のパスに合わせて修正
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 @dataclass
 class AircontrolPPOTrainConfig:

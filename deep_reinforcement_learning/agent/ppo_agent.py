@@ -13,6 +13,7 @@ from torch.distributions import Categorical
 
 
 # ========= 条件付きマスク付き分布 =========
+# ========= 条件付きマスク付き分布 =========
 class MultiHeadCategoricalMasked:
     def __init__(
         self,
@@ -39,6 +40,8 @@ class MultiHeadCategoricalMasked:
         self.off_idx = off_idx
         self.fan_mode_idx = fan_mode_idx
         self.auto_wind_idx = auto_wind_idx
+
+        # logits_cat を [T, M, W, O]×devices に分解
         chunks = torch.split(logits_cat, slice_sizes, dim=-1)
         self.T, self.M, self.W, self.O = [], [], [], []
         for d in range(n_devices):
@@ -109,6 +112,13 @@ class MultiHeadCategoricalMasked:
     def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
         B = actions.size(0)
         total = torch.zeros(B, device=actions.device, dtype=self.logits_cat.dtype)
+
+        # 安全チェック（挙動は変えず、異常時だけメッセージ）
+        if torch.isnan(self.logits_cat).any() or torch.isinf(self.logits_cat).any():
+            print(
+                "[WARN] logits_cat contains NaN/Inf in MultiHeadCategoricalMasked.log_prob"
+            )
+
         for d in range(self.n_devices):
             a_t = actions[:, 4 * d + 0]
             a_m = actions[:, 4 * d + 1]
@@ -232,7 +242,8 @@ class MultiDeviceQuadHeadDiscreteActor(nn.Module):
         K: int,  # 半径（±K を許可）
     ) -> torch.Tensor:
         B, D, Ktemp = logits_T.shape
-        # 許可位置のブールマスクを作る
+
+        # 許可位置のブールマスクを作る（±K の移動窓）
         allow = torch.zeros((B, D, Ktemp), device=logits_T.device, dtype=torch.bool)
         base = torch.clamp(temp_idx_BD, 0, Ktemp - 1)  # 中心
         for delta in range(-K, K + 1):
@@ -240,33 +251,34 @@ class MultiDeviceQuadHeadDiscreteActor(nn.Module):
             oh = torch.zeros_like(allow)
             oh.scatter_(-1, idx, True)
             allow |= oh
-        # デバイスごとに設定温度の幅を適応。
-        B, D, Ktemp = allow.shape  # バッチ, デバイスの数, 温度リストの次元数
-        # --- temp_range_idx_list: List[(low_idx, high_idx)] (len = D) をテンソルに ---
 
+        # デバイスごとの設定温度の幅を適用
         ranges = torch.as_tensor(temp_range_idx_list, device=allow.device)
         if ranges.ndim == 3:
             # Batch 次元が乗っているので 0 番目だけ使う（今は全 env 同じレンジの前提）
-            ranges = ranges[0]  # → shape (8, 2)
+            ranges = ranges[0]
         elif ranges.ndim != 2:
             raise ValueError(f"unexpected temp_range_idx_list shape: {ranges.shape}")
-        # rangesのshapeは[D,2]の形である
+
         low_idx = ranges[:, 0].view(1, D, 1)
         hight_idx = ranges[:, 1].view(1, D, 1)
-        idx = torch.arange(Ktemp, device=allow.device).view(
-            1, 1, Ktemp
-        )  # [1,1,Ktemp]のlogitの形状に変形
+        idx = torch.arange(Ktemp, device=allow.device).view(1, 1, Ktemp)
         oh = (idx >= low_idx) & (idx <= hight_idx)
         allow = allow & oh
 
-        # 許可外を -inf へ
+        # 許可外を -inf 相当に
         masked = torch.where(allow, logits_T, torch.full_like(logits_T, -1e30))
         invalid = (~allow).all(dim=-1)  # [B, D]
+
         if invalid.any():
+            bd_idx = invalid.nonzero(as_tuple=False)  # [N, 2]
             print(
-                "[WARN] no valid temp class for some (B,D):",
-                invalid.nonzero(as_tuple=False),
+                "[WARN] no valid temp class for some (B,D), fallback to unmasked:",
+                bd_idx,
             )
+            # 安全対策: その (B,D) だけはマスクを諦めて元の logits を使う
+            for b, d in bd_idx.tolist():
+                masked[b, d, :] = logits_T[b, d, :]
 
         return masked
 
@@ -312,8 +324,8 @@ class MultiDeviceQuadHeadDiscreteActor(nn.Module):
         m = self.head_mode(feat).view(B, self.n_devices, self.n_mode)
         w = self.head_wind(feat).view(B, self.n_devices, self.n_wind)
         o = self.head_on_off(feat).view(B, self.n_devices, self.n_onoff)
-        """ 設定温度について制約を付加する """
-        # ---- ここで info.current_temp_index を読み、±1 以外を事前にマスク ----
+
+        # ---- 設定温度について制約を付加する ----
         cur_idx = None
         temp_range_idx_list = None
 
@@ -346,7 +358,9 @@ class MultiDeviceQuadHeadDiscreteActor(nn.Module):
                     temp_range_idx_list = info.temp_range_idx_list
 
         cur_idx = self._normalize_temp_idx(cur_idx, B, t.device)
-        if cur_idx is not None:
+
+        # temp_range_idx_list が None の場合はマスク自体をスキップ（ロジック破綻防止）
+        if cur_idx is not None and temp_range_idx_list is not None:
             # 有効(0..n_temp-1)だけをマスク、無効(-1 等)は素通し
             valid_mask = (cur_idx >= 0) & (cur_idx < self.n_temp)  # [B, D]
             if valid_mask.any():
