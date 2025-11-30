@@ -219,7 +219,7 @@ private_information.py
 
 # Model files
 *.pkl
-models/
+
 archive/
 data/
 old/
