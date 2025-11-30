@@ -93,7 +93,9 @@ class Trainer:
 if __name__ == "__main__":
     start = pd.Timestamp("2025-09-10 07:00:00")
     end = pd.Timestamp("2025-09-11 07:00:00")
-    ppo = Trainer("data/base/hourly_filled.csv", "data/base/hourly_filled.csv", "Area1")
+    ppo = Trainer(
+        "data/base/hourly_filled.csv", "data/base/hourly_filled.csv", "BreakRoom"
+    )
     ppo.setup()
     ppo.load(start_term=start, end_term=end)
     ppo.train_run()

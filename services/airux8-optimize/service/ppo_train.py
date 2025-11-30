@@ -39,7 +39,7 @@ from input_info.crea_building_information import (
 @dataclass
 class AircontrolPPOTrainConfig:
     # ベクター環境
-    num_train_envs: int = 1
+    num_train_envs: int = 10
     num_test_envs: int = 1
 
     # ログ
@@ -64,10 +64,10 @@ class AircontrolPPOTrainConfig:
 
     # Trainer ハイパーパラメータ
     max_epoch: int = 20
-    step_per_epoch: int = 24
-    step_per_collect: int = 24
-    repeat_per_collect: int = 1
-    batch_size: int = 24
+    step_per_epoch: int = 480
+    step_per_collect: int = 240
+    repeat_per_collect: int = 5
+    batch_size: int = 120
     episode_per_test: int = 1
     stop_mean_rew: float = 0.0
 

@@ -213,7 +213,6 @@ class AirControlEnv(gym.Env):
         )
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
-        print("初期化中...")
         self.current_time = self.start_term
         super().reset(seed=seed)
         self.dp_builder = copy.deepcopy(self.builder)
@@ -263,7 +262,6 @@ class AirControlEnv(gym.Env):
 
     # --------- 1ステップ進める ---------
     def step(self, action):
-        print("実行中...")
         # 入力の用意
         control_df = actions_to_frame(
             act_indices=action,
@@ -335,7 +333,6 @@ class AirControlEnv(gym.Env):
         truncated = False
         # 状態更新（DPに実績として取り込み、時間を+1h）
         self.update_state(pred_df)
-        print("1 Step done")
         return obs, reward, terminated, truncated, info
 
     def update_state(self, pred_df):
