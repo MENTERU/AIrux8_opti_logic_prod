@@ -338,6 +338,16 @@ class Trainer:
                         cur_idx = cur_idx[None, :]
                     info_batch.current_temp_index = cur_idx
 
+                # ★ 3) temp_range_idx_list（設定温度の有効範囲）も渡す
+                if (
+                    "temp_range_idx_list" in info
+                    and info["temp_range_idx_list"] is not None
+                ):
+                    tri = np.asarray(info["temp_range_idx_list"], dtype=np.int64)
+                    # 形は [n_devices, 2] / [1, n_devices, 2] どちらでもOK
+                    # Actor 側では ndim==2 or 3 両方対応しているのでそのまま突っ込んでよい
+                    info_batch.temp_range_idx_list = tri
+
             with torch.no_grad():
                 out = policy(TBatch(obs=obs_tensor, info=info_batch))
                 act = out.act.detach().cpu().numpy()[0].astype(int)
@@ -702,11 +712,9 @@ class Trainer:
 if __name__ == "__main__":
     start = pd.Timestamp("2025-09-10 07:00:00")
     end = pd.Timestamp("2025-09-11 07:00:00")
-    ppo = Trainer(
-        "data/base/hourly_filled.csv", "data/base/hourly_filled.csv", "BreakRoom"
-    )
+    ppo = Trainer("data/base/hourly_filled.csv", "data/base/hourly_filled.csv", "Area1")
     ppo.setup()
     ppo.load(start_term=start, end_term=end)
     # ppo.train_run()
-    # ppo.reproduce(start_term=start, end_term=end, area_name="Area1")
-    ppo.update_train(start_term=start, end_term=end, area_name="Area1")
+    ppo.reproduce(start_term=start, end_term=end)
+    # ppo.update_train(start_term=start, end_term=end, area_name="Area1")

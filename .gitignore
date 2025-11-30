@@ -227,7 +227,6 @@ gdrive_service_account.json
 all_settings_dashboard/
 validation_plots.html
 # Log files
-logs/
 analysis/output/
 visualization/
 .cursor/
