@@ -1,0 +1,33 @@
+services:
+  # Backend
+  job-isetan-data-scraping: &job-isetan-data-scraping
+    container_name: job-isetan-data-scraping
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ${PWD}:/app
+      - job-isetan-venv:/app/.venv
+    working_dir: /app
+    networks:
+      - menteru-net
+
+    ports:
+      - "8080:8080"
+
+    restart: "no"
+    environment:
+      # 開発環境変数
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONUNBUFFERED=1
+      - LOCAL_DATA_ROOT=/app/data
+      - PROJECT_ID=airux8-opti-logic
+      - BUCKET_NAME=airux8-opti-logic-prod
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/config/job-isetan-data-scraping-sa.json
+    
+volumes:
+  job-isetan-venv:
+
+networks:
+  menteru-net:
+    driver: bridge

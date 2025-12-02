@@ -1,0 +1,16 @@
+[
+  {"name": "AC_Name", "type": "STRING", "mode": "REQUIRED", "description": "A/C unit identifier (e.g., G-21, G-24)"},
+  {"name": "Datetime", "type": "TIMESTAMP", "mode": "REQUIRED", "description": "Timestamp of the measurement (timezone-aware)"},
+  {"name": "Outdoor_Temp", "type": "INTEGER", "mode": "NULLABLE", "description": "Outdoor temperature in degrees Celsius"},
+  {"name": "Indoor_Temp", "type": "FLOAT64", "mode": "NULLABLE", "description": "Indoor temperature in degrees Celsius"},
+  {"name": "AC_Set_Temperature", "type": "FLOAT64", "mode": "NULLABLE", "description": "A/C set temperature in degrees Celsius"},
+  {"name": "AC_ON_OFF", "type": "STRING", "mode": "NULLABLE", "description": "A/C power state (ON or OFF)"},
+  {"name": "AC_Mode", "type": "STRING", "mode": "NULLABLE", "description": "A/C operating mode (e.g., HEAT, COOL)"},
+  {"name": "AC_Fan_Speed", "type": "STRING", "mode": "NULLABLE", "description": "A/C fan speed setting (nullable, can be empty)"},
+  {"name": "Naive_Energy_Level", "type": "INTEGER", "mode": "NULLABLE", "description": "Naive energy level (0-100 scale)"},
+  {"name": "Airux_Energy_Level", "type": "INTEGER", "mode": "NULLABLE", "description": "Airux energy level (0-100 scale)"},
+  {"name": "Outdoor_Room_Temp", "type": "FLOAT64", "mode": "NULLABLE", "description": "Outdoor room temperature in degrees Celsius"},
+  {"name": "Outdoor_Set_Temp", "type": "FLOAT64", "mode": "NULLABLE", "description": "Outdoor set temperature in degrees Celsius"},
+  {"name": "Room_Set_Temp", "type": "FLOAT64", "mode": "NULLABLE", "description": "Room set temperature in degrees Celsius"}
+]
+
