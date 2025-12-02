@@ -120,7 +120,7 @@ jobs:
                 --set-env-vars "BUCKET_NAME=${{ vars.BUCKET_NAME }}" \
                 --set-env-vars "START_DATE=" \
                 --set-env-vars "END_DATE=" \
-                --set-env-vars "INPUT_DATA_PATH=${{ vars.DATA_LOADER_INPUT_DATA_PATH }}" \
+                --set-env-vars "MASTER_DATA_PATH=${{ vars.DATA_LOADER_MASTER_DATA_PATH }}" \
                 --set-env-vars "LOADED_DATA_PATH=${{ vars.DATA_LOADER_LOADED_DATA_PATH }}" 
               # Check if scheduler job exists
               if gcloud scheduler jobs describe job-$dir_lower-scheduler --location=${{ vars.REGION }} 2>/dev/null; then

@@ -8,7 +8,7 @@ class DataSourceType(str, Enum):
 
 DATA_SOURCE_TYPE = DataSourceType.REMOTE
 
-LOCAL_INPUT_DATA_PATH = "data/00_InputData"
+LOCAL_MASTER_DATA_PATH = "data/01_MasterData"
 LOCAL_LOADED_DATA_PATH = "data/06_LoadedData"
 
 IDU_FILENAME_PREFIX = "idu_loaded"

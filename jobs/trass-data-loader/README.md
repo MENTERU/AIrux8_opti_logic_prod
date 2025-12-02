@@ -148,6 +148,11 @@ docker compose up --build
 gcloud iam service-accounts create job-trass-data-loader     --project=airux8-opti-logic     --description="HVAC Data Loader Service Account"     --display-name="job-trass-data-loader"
 
 gcloud projects add-iam-policy-binding airux8-opti-logic     --member="serviceAccount:job-trass-data-loader@airux8-opti-logic.iam.gserviceaccount.com"     --role="roles/storage.objectAdmin"
+
+gcloud projects add-iam-policy-binding airux8-opti-logic \
+  --member="serviceAccount:job-trass-data-loader@airux8-opti-logic.iam.gserviceaccount.com" \
+  --role="roles/bigquery.admin"
+
 ```
 
 ---
