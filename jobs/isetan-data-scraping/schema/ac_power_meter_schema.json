@@ -1,0 +1,9 @@
+[
+  {"name": "Mesh_ID", "type": "INTEGER", "mode": "REQUIRED", "description": "Mesh network identifier"},
+  {"name": "PM_Addr_ID", "type": "INTEGER", "mode": "REQUIRED", "description": "Power meter address identifier"},
+  {"name": "Datetime", "type": "TIMESTAMP", "mode": "REQUIRED", "description": "Timestamp of the measurement (timezone-aware)"},
+  {"name": "Phase_A", "type": "INTEGER", "mode": "NULLABLE", "description": "Power reading for Phase A in watts"},
+  {"name": "Phase_B", "type": "INTEGER", "mode": "NULLABLE", "description": "Power reading for Phase B in watts"},
+  {"name": "Phase_C", "type": "INTEGER", "mode": "NULLABLE", "description": "Power reading for Phase C in watts"}
+]
+

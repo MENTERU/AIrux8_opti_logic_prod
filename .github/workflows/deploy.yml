@@ -109,7 +109,80 @@ jobs:
                 --task-timeout=900s \
                 --max-retries=1 \
                 --set-env-vars=PROJECT_ID=${{ vars.PROJECT_ID }},BUCKET_NAME=${{ vars.BUCKET_NAME }}
-
+            # Check if scheduler job exists and update or create
+            if gcloud scheduler jobs describe job-clea-data-scraping-scheduler --location=${{ vars.REGION }} 2>/dev/null; then
+                echo "Updating existing scheduler job..."
+                gcloud scheduler jobs update http job-clea-data-scraping-scheduler \
+                  --location="${{ vars.REGION }}" \
+                  --schedule="0 0 * * *" \
+                  --time-zone="Asia/Tokyo" \
+                  --uri="https://${{ vars.REGION }}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${{ vars.PROJECT_ID }}/jobs/$JOB_NAME:run" \
+                  --http-method="POST" \
+                  --oauth-service-account-email="${{ vars.JOB_ISETAN_DATA_SCRAPING_SA }}" \
+                  --oauth-token-scope="https://www.googleapis.com/auth/cloud-platform" \
+                  --description="Scheduler job that triggers $JOB_NAME everyday at 05:00 (JST)" \
+                  --attempt-deadline=300s \
+                  --min-backoff=60s \
+                  --max-backoff=60s \
+                  --max-retry-duration=300s
+              else
+                echo "Creating new scheduler job..."
+                gcloud scheduler jobs create http job-clea-data-scraping-scheduler \
+                  --location="${{ vars.REGION }}" \
+                  --schedule="0 0 * * *" \
+                  --time-zone="Asia/Tokyo" \
+                  --uri="https://${{ vars.REGION }}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${{ vars.PROJECT_ID }}/jobs/$JOB_NAME:run" \
+                  --http-method="POST" \
+                  --oauth-service-account-email="${{ vars.JOB_ISETAN_DATA_SCRAPING_SA }}" \
+                  --oauth-token-scope="https://www.googleapis.com/auth/cloud-platform" \
+                  --description="Scheduler job that triggers $JOB_NAME everyday at 05:00 (JST)" \
+                  --attempt-deadline=300s \
+                  --min-backoff=60s \
+                  --max-backoff=60s \
+                  --max-retry-duration=300s
+              fi
+            elif [ "$dir_lower" = "isetan-data-scraping" ]; then
+              gcloud run jobs deploy $JOB_NAME \
+                --region=${{ vars.REGION }} \
+                --image="$IMAGE_NAME" \
+                --service-account=${{ vars.JOB_ISETAN_DATA_SCRAPING_SA }} \
+                --memory=2Gi \
+                --cpu=1 \
+                --task-timeout=900s \
+                --max-retries=3 \
+                --set-env-vars=PROJECT_ID=${{ vars.PROJECT_ID }},BUCKET_NAME=${{ vars.BUCKET_NAME }}
+              # Check if scheduler job exists and update or create
+              if gcloud scheduler jobs describe job-$dir_lower-scheduler --location=${{ vars.REGION }} 2>/dev/null; then
+                echo "Updating existing scheduler job..."
+                gcloud scheduler jobs update http job-$dir_lower-scheduler \
+                  --location="${{ vars.REGION }}" \
+                  --schedule="0 0 * * *" \
+                  --time-zone="Asia/Tokyo" \
+                  --uri="https://${{ vars.REGION }}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${{ vars.PROJECT_ID }}/jobs/$JOB_NAME:run" \
+                  --http-method="POST" \
+                  --oauth-service-account-email="${{ vars.JOB_ISETAN_DATA_SCRAPING_SA }}" \
+                  --oauth-token-scope="https://www.googleapis.com/auth/cloud-platform" \
+                  --description="Scheduler job that triggers $JOB_NAME everyday at 05:00 (JST)" \
+                  --attempt-deadline=300s \
+                  --min-backoff=60s \
+                  --max-backoff=60s \
+                  --max-retry-duration=300s
+              else
+                echo "Creating new scheduler job..."
+                gcloud scheduler jobs create http job-$dir_lower-scheduler \
+                  --location="${{ vars.REGION }}" \
+                  --schedule="0 0 * * *" \
+                  --time-zone="Asia/Tokyo" \
+                  --uri="https://${{ vars.REGION }}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${{ vars.PROJECT_ID }}/jobs/$JOB_NAME:run" \
+                  --http-method="POST" \
+                  --oauth-service-account-email="${{ vars.JOB_ISETAN_DATA_SCRAPING_SA }}" \
+                  --oauth-token-scope="https://www.googleapis.com/auth/cloud-platform" \
+                  --description="Scheduler job that triggers $JOB_NAME everyday at 05:00 (JST)" \
+                  --attempt-deadline=300s \
+                  --min-backoff=60s \
+                  --max-backoff=60s \
+                  --max-retry-duration=300s
+              fi
             elif [ "$dir_lower" = "trass-data-loader" ]; then
               gcloud run jobs deploy $JOB_NAME \
                 --region=${{ vars.REGION }} \
