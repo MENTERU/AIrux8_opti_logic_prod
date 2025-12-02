@@ -123,12 +123,18 @@ def compose_odu(df: pd.DataFrame) -> Optional[pd.DataFrame]:
     return out_df
 
 
-def list_datasets(bigquery_client: bigquery.BigQuery, project_id: str):
-    datasets = list(bigquery_client.client.list_datasets(project_id))
-    if not datasets:
-        logger.warning(f"No datasets found in {project_id}!")
-        return []
-    return [dataset.dataset_id for dataset in datasets]
+def list_datasets(gc_storage_client: storage.Storage):
+    master_list = (
+        os.listdir(LOCAL_MASTER_DATA_PATH)
+        if DATA_SOURCE_TYPE == DataSourceType.LOCAL
+        else gc_storage_client.list(prefix=GCPEnv.MASTER_DATA_PATH)
+    )
+    datasets = [
+        master_filename.split("/")[-1].removeprefix("MASTER_").removesuffix(".xlsx")
+        for master_filename in master_list
+        if "MASTER" in master_filename
+    ]
+    return datasets
 
 
 def main():
@@ -148,15 +154,17 @@ def main():
 
         # Determine Date Range: Use Env vars if available, otherwise default to [Now-1day -> Now]
         end_date = (
-            GCPEnv.END_DATE if GCPEnv.END_DATE else now_dt.strftime("%Y-%m-%d %H:%M:%S")
+            GCPEnv.END_DATE
+            if GCPEnv.END_DATE
+            else (now_dt - timedelta(days=1)).strftime("%Y-%m-%d 23:59:59")
         )
 
         start_date = (
             GCPEnv.START_DATE
             if GCPEnv.START_DATE
-            else (
-                datetime.strptime(end_date, "%Y-%m-%d %H:%M:%S") - timedelta(days=1)
-            ).strftime("%Y-%m-%d %H:%M:%S")
+            else (datetime.strptime(end_date, "%Y-%m-%d %H:%M:%S")).strftime(
+                "%Y-%m-%d 00:00:00"
+            )
         )
 
         # Validate date consistency
@@ -174,76 +182,97 @@ def main():
 
         bigquery_client = bigquery.BigQuery(project_id=GCPEnv.PROJECT_ID)
 
-        store_names = list_datasets(bigquery_client, GCPEnv.PROJECT_ID)
+        store_names = list_datasets(gc_storage_client)
 
         logger.info(f"Stores detected: {store_names}")
 
+        failed_facilities = set([])
+
         # Iterate over each store to process specific data
         for store_name in store_names:
-            logger.info(f"📌 Processing store: {store_name}")
-
-            output_prefix = os.path.join(
-                (
-                    LOCAL_LOADED_DATA_PATH
-                    if DATA_SOURCE_TYPE == DataSourceType.LOCAL
-                    else GCPEnv.LOADED_DATA_PATH
-                ),
-                store_name,
-            )
-
-            # Ensure output directory exists
-            if DATA_SOURCE_TYPE == DataSourceType.LOCAL:
-                os.makedirs(output_prefix, exist_ok=True)
-            else:
-                gc_storage_client.makedirs(output_prefix)
 
             try:
-                # 1. Load Raw Data
-                query = f"""
-                    SELECT * FROM `{GCPEnv.PROJECT_ID}.{store_name}.table_name` 
-                    WHERE TIMESTAMP_TRUNC(Datetime, SECOND) >= TIMESTAMP('{start_date}') 
-                    and TIMESTAMP_TRUNC(Datetime, SECOND) <= TIMESTAMP('{end_date}')
-                """
+                logger.info(f"📌 Processing store: {store_name}")
 
-                idu_raw = bigquery_client.query(
-                    sql=query.replace("table_name", "ac_control_raw")
+                output_prefix = os.path.join(
+                    (
+                        LOCAL_LOADED_DATA_PATH
+                        if DATA_SOURCE_TYPE == DataSourceType.LOCAL
+                        else GCPEnv.LOADED_DATA_PATH
+                    ),
+                    store_name,
                 )
-                odu_raw = bigquery_client.query(
-                    sql=query.replace("table_name", "ac_power_meter_raw")
-                )
+
+                # Ensure output directory exists
+                if DATA_SOURCE_TYPE == DataSourceType.LOCAL:
+                    os.makedirs(output_prefix, exist_ok=True)
+                else:
+                    gc_storage_client.makedirs(output_prefix)
+
+                try:
+                    # 1. Load Raw Data
+                    query = f"""
+                        SELECT * FROM `{GCPEnv.PROJECT_ID}.{store_name}.table_name` 
+                        WHERE TIMESTAMP_TRUNC(Datetime, SECOND) >= TIMESTAMP('{start_date}') 
+                        and TIMESTAMP_TRUNC(Datetime, SECOND) <= TIMESTAMP('{end_date}')
+                    """
+
+                    idu_raw = bigquery_client.query(
+                        sql=query.replace("table_name", "ac_control_raw")
+                    )
+                    odu_raw = bigquery_client.query(
+                        sql=query.replace("table_name", "ac_power_meter_raw")
+                    )
+
+                except Exception as e:
+                    raise Exception(f"Error while loading raw data from BigQuery: {e}")
+
+                # 2. Transform Data
+                idu = compose_idu(idu_raw)
+                odu = compose_odu(odu_raw)
+
+                # 3. Save IDU Data
+                if idu is not None and not idu.empty:
+                    idu_output = os.path.join(
+                        output_prefix, f"{IDU_FILENAME_PREFIX}.csv"
+                    )
+                    (
+                        idu.to_csv(idu_output, index=False)
+                        if DATA_SOURCE_TYPE == DataSourceType.LOCAL
+                        else gc_storage_client.write_csv(idu, idu_output)
+                    )
+                    logger.info(f"IDU saved: {idu_output}")
+                else:
+                    logger.warning(f"No IDU data to save for store {store_name}")
+                    failed_facilities.add(store_name)
+
+                # 4. Save ODU Data
+                if odu is not None and not odu.empty:
+                    odu_output = os.path.join(
+                        output_prefix, f"{ODU_FILENAME_PREFIX}.csv"
+                    )
+                    (
+                        odu.to_csv(odu_output, index=False)
+                        if DATA_SOURCE_TYPE == DataSourceType.LOCAL
+                        else gc_storage_client.write_csv(odu, odu_output)
+                    )
+                    logger.info(f"ODU saved: {odu_output}")
+                else:
+                    logger.warning(f"No ODU data to save for store {store_name}")
+                    failed_facilities.add(store_name)
 
             except Exception as e:
-                raise Exception(f"Error while loading raw data from BigQuery: {e}")
+                logger.error(f"Facility {store_name} failed: {e}")
+                failed_facilities.add(store_name)
 
-            # 2. Transform Data
-            idu = compose_idu(idu_raw)
-            odu = compose_odu(odu_raw)
+        if failed_facilities:
+            logger.warning(
+                "Data pipeline completed with failures for: %s",
+                ", ".join(failed_facilities),
+            )
+            return 1
 
-            # 3. Save IDU Data
-            if idu is not None:
-                idu_output = os.path.join(output_prefix, f"{IDU_FILENAME_PREFIX}.csv")
-                (
-                    idu.to_csv(idu_output, index=False)
-                    if DATA_SOURCE_TYPE == DataSourceType.LOCAL
-                    else gc_storage_client.write_csv(idu, idu_output)
-                )
-                logger.info(f"IDU saved: {idu_output}")
-            else:
-                logger.warning(f"No IDU data to save for store {store_name}")
-
-            # 4. Save ODU Data
-            if odu is not None:
-                odu_output = os.path.join(output_prefix, f"{ODU_FILENAME_PREFIX}.csv")
-                (
-                    odu.to_csv(odu_output, index=False)
-                    if DATA_SOURCE_TYPE == DataSourceType.LOCAL
-                    else gc_storage_client.write_csv(odu, odu_output)
-                )
-                logger.info(f"ODU saved: {odu_output}")
-            else:
-                logger.warning(f"No ODU data to save for store {store_name}")
-
-        logger.info("🎉 Data pipeline completed successfully!")
+        logger.info("🎉 Data pipeline completed successfully for all facilities!")
         return 0
 
     except Exception as e:

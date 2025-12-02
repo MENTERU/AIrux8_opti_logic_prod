@@ -10,4 +10,5 @@ class GCPEnv:
     START_DATE = os.environ.get("START_DATE")
     END_DATE = os.environ.get("END_DATE")
 
+    MASTER_DATA_PATH = os.environ.get("MASTER_DATA_PATH") or "01_MasterData"
     LOADED_DATA_PATH = os.environ.get("LOADED_DATA_PATH") or "06_LoadedData"
