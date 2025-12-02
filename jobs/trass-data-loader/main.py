@@ -244,7 +244,7 @@ def main():
                     logger.info(f"IDU saved: {idu_output}")
                 else:
                     logger.warning(f"No IDU data to save for store {store_name}")
-                    failed_facilities.add(store_name)
+                    raise Exception(f"No IDU data to save for store {store_name}")
 
                 # 4. Save ODU Data
                 if odu is not None and not odu.empty:
@@ -259,7 +259,7 @@ def main():
                     logger.info(f"ODU saved: {odu_output}")
                 else:
                     logger.warning(f"No ODU data to save for store {store_name}")
-                    failed_facilities.add(store_name)
+                    raise Exception(f"No ODU data to save for store {store_name}")
 
             except Exception as e:
                 logger.error(f"Facility {store_name} failed: {e}")
