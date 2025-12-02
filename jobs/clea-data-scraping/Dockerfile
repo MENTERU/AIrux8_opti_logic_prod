@@ -42,9 +42,3 @@ EXPOSE 8080
 # Default CMD for Cloud Run Jobs (runs scraping directly)
 # For local development, docker-compose will override this with uvicorn
 CMD ["uv", "run", "python", "main.py"]
-
-
-
-
-
-

@@ -242,3 +242,5 @@ job-clea-data-scraping-sa.json
 .ssh
 move-data-to-bigquery/
 archive/
+airux8_web_login_info.json
+job-isetan-data-scraping-sa.json

@@ -8,6 +8,19 @@ class GCPEnv:
     PROJECT_ID_NUMBER = os.environ.get("PROJECT_ID_NUMBER") or "144706892563"
     BUCKET_NAME = os.environ.get("BUCKET_NAME") or "airux8-opti-logic-prod"
 
+    # BigQuery and Secret Manager configuration for Clea scraping
+    STORE_NAME = os.environ.get("STORE_NAME") or "Clea"
+    BQ_DATASET_CLEA = os.environ.get("BQ_DATASET_CLEA") or "Clea"
+    BQ_TABLE_AC_CONTROL_RAW = (
+        os.environ.get("BQ_TABLE_AC_CONTROL_RAW") or "ac_control_raw"
+    )
+    BQ_TABLE_AC_POWER_METER_RAW = (
+        os.environ.get("BQ_TABLE_AC_POWER_METER_RAW") or "ac_power_meter_raw"
+    )
+    LOGIN_INFO_SECRET_NAME = (
+        os.environ.get("LOGIN_INFO_SECRET_NAME") or "AIRUX8_WEB_LOGIN_INFO"
+    )
+
     INPUT_DATA_FOLDER = os.environ.get("INPUT_DATA_FOLDER") or "00_InputData/"
 
     # GCS paths for Clea data storage

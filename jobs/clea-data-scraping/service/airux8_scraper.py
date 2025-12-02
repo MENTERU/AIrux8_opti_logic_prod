@@ -169,17 +169,17 @@ class Alrux8Scraper:
 
             # 日付ピッカーが表示されるまで待機
             logger.info("日付ピッカー要素の表示を待機中...")
-            await self.page.wait_for_selector("select", state="visible", timeout=30000)
+            await self.page.wait_for_selector("select", state="visible", timeout=90000)
             await self.page.wait_for_timeout(1000)  # 追加の安定化待機
 
             # 年・月の選択（開始日）
             year_selector = self.page.locator("select").nth(1)
-            await year_selector.wait_for(state="visible", timeout=30000)
+            await year_selector.wait_for(state="visible", timeout=90000)
             await year_selector.select_option(str(start_date.year))
             await self.page.wait_for_timeout(500)
 
             month_selector = self.page.locator("select").nth(0)
-            await month_selector.wait_for(state="visible", timeout=30000)
+            await month_selector.wait_for(state="visible", timeout=90000)
             await month_selector.select_option(str(start_date.month - 1))
             await self.page.wait_for_timeout(1000)
 
@@ -188,7 +188,7 @@ class Alrux8Scraper:
             await self.page.wait_for_selector(
                 "button.rdrDay:not(.rdrDayPassive):not(.rdrDayDisabled)",
                 state="visible",
-                timeout=30000,
+                timeout=90000,
             )
             start_day = (
                 self.page.locator(
@@ -197,7 +197,7 @@ class Alrux8Scraper:
                 .filter(has_text=str(start_date.day))
                 .first
             )
-            await start_day.wait_for(state="visible", timeout=30000)
+            await start_day.wait_for(state="visible", timeout=90000)
             await start_day.scroll_into_view_if_needed()
             await start_day.click()
             await self.page.wait_for_timeout(500)
@@ -218,7 +218,7 @@ class Alrux8Scraper:
                 .filter(has_text=str(end_date.day))
                 .first
             )
-            await end_day.wait_for(state="visible", timeout=30000)
+            await end_day.wait_for(state="visible", timeout=90000)
             await end_day.scroll_into_view_if_needed()
             await end_day.click()
             await self.page.wait_for_timeout(500)
@@ -713,6 +713,10 @@ class Alrux8Scraper:
             ]
 
         elif data_type == "A/C Power Meter":
+            logger.info(
+                f"AC Power Meter 変換開始: 入力カラム={list(data_frame.columns)}, "
+                f"行数={len(data_frame)}"
+            )
             rename_mapping = {
                 "Mesh ID": "Mesh_ID",
                 "PM Addr ID": "PM_Addr_ID",
@@ -722,7 +726,17 @@ class Alrux8Scraper:
                 "Phase C": "Phase_C",
             }
 
+            # Check which columns exist before renaming
+            missing_columns = [
+                col for col in rename_mapping.keys() if col not in data_frame.columns
+            ]
+            if missing_columns:
+                logger.warning(
+                    f"AC Power Meter 変換: 見つからないカラム: {missing_columns}"
+                )
+
             data_frame = data_frame.rename(columns=rename_mapping)
+            logger.info(f"AC Power Meter リネーム後: カラム={list(data_frame.columns)}")
 
             target_columns = [
                 "Mesh_ID",
@@ -738,13 +752,62 @@ class Alrux8Scraper:
 
         # Keep only expected columns
         existing_columns = [c for c in target_columns if c in data_frame.columns]
+        missing_target_columns = [
+            c for c in target_columns if c not in data_frame.columns
+        ]
+        if missing_target_columns:
+            logger.warning(
+                f"変換後、必要なカラムが見つかりません: {missing_target_columns}, "
+                f"存在するカラム: {existing_columns}"
+            )
         data_frame = data_frame[existing_columns]
+        logger.info(
+            f"変換完了: 最終カラム={list(data_frame.columns)}, "
+            f"最終行数={len(data_frame)}"
+        )
 
-        # Ensure timestamp type
+        # Ensure timestamp type and filter out rows with null Datetime
         if "Datetime" in data_frame.columns:
+            original_datetime_count = len(data_frame)
             data_frame["Datetime"] = pd.to_datetime(
                 data_frame["Datetime"], errors="coerce", utc=True
             )
+            # Filter out rows where Datetime is null (BigQuery requires non-null Datetime)
+            data_frame = data_frame[data_frame["Datetime"].notna()].copy()
+            filtered_datetime_count = original_datetime_count - len(data_frame)
+            if filtered_datetime_count > 0:
+                logger.warning(
+                    f"null Datetimeの行をスキップ: {filtered_datetime_count}行 "
+                    f"({original_datetime_count} → {len(data_frame)})"
+                )
+
+        # Filter out rows with null required fields (for AC Power Meter)
+        if data_type == "A/C Power Meter":
+            original_required_count = len(data_frame)
+            # Filter rows where any required field is null
+            required_fields = ["Mesh_ID", "PM_Addr_ID", "Datetime"]
+            existing_required = [f for f in required_fields if f in data_frame.columns]
+
+            if existing_required:
+                # Create a mask for rows where all required fields are not null
+                mask = pd.Series([True] * len(data_frame), index=data_frame.index)
+                for field in existing_required:
+                    if field == "Mesh_ID" or field == "PM_Addr_ID":
+                        # For integer fields, check for null and also ensure they're valid integers
+                        mask = mask & data_frame[field].notna()
+                        # Also check that they're not empty strings or invalid values
+                        mask = mask & (data_frame[field].astype(str).str.strip() != "")
+                    else:
+                        # For Datetime, already filtered above
+                        mask = mask & data_frame[field].notna()
+
+                data_frame = data_frame[mask].copy()
+                filtered_required_count = original_required_count - len(data_frame)
+                if filtered_required_count > 0:
+                    logger.warning(
+                        f"必須フィールド(Mesh_ID/PM_Addr_ID/Datetime)がnullの行をスキップ: "
+                        f"{filtered_required_count}行 ({original_required_count} → {len(data_frame)})"
+                    )
 
         return data_frame
 
@@ -797,14 +860,86 @@ class Alrux8Scraper:
 
                         try:
                             df = pd.read_csv(dest_path, low_memory=False)
+
+                            # Filter out rows with empty AC names before uploading
+                            original_row_count = len(df)
+                            if file_data_type == "A/C制御":
+                                # For AC Control, filter by "A/C Name" column
+                                ac_name_column = "A/C Name"
+                                if ac_name_column in df.columns:
+                                    df = df[
+                                        df[ac_name_column].notna()
+                                        & (
+                                            df[ac_name_column].astype(str).str.strip()
+                                            != ""
+                                        )
+                                    ].copy()
+                                    filtered_count = original_row_count - len(df)
+                                    if filtered_count > 0:
+                                        logger.info(
+                                            f"空のAC名の行をスキップ: {filtered_count}行 "
+                                            f"({original_row_count} → {len(df)})"
+                                        )
+                                else:
+                                    logger.warning(
+                                        f"AC名カラム '{ac_name_column}' が見つかりません: {csv_file}"
+                                    )
+                            elif file_data_type == "A/C Power Meter":
+                                # For Power Meter, check Mesh_ID and PM_Addr_ID
+                                mesh_id_column = "Mesh ID"
+                                pm_addr_column = "PM Addr ID"
+                                logger.info(
+                                    f"AC Power Meter フィルタリング: "
+                                    f"カラム存在確認 - Mesh ID: {mesh_id_column in df.columns}, "
+                                    f"PM Addr ID: {pm_addr_column in df.columns}, "
+                                    f"全カラム: {list(df.columns)}"
+                                )
+                                if (
+                                    mesh_id_column in df.columns
+                                    and pm_addr_column in df.columns
+                                ):
+                                    df = df[
+                                        df[mesh_id_column].notna()
+                                        & df[pm_addr_column].notna()
+                                    ].copy()
+                                    filtered_count = original_row_count - len(df)
+                                    if filtered_count > 0:
+                                        logger.info(
+                                            f"空のMesh_ID/PM_Addr_IDの行をスキップ: {filtered_count}行 "
+                                            f"({original_row_count} → {len(df)})"
+                                        )
+                                else:
+                                    logger.warning(
+                                        f"AC Power Meter フィルタリング: "
+                                        f"必要なカラムが見つかりません。フィルタリングをスキップします。"
+                                    )
+
+                            # Skip upload if dataframe is empty after filtering
+                            if df.empty:
+                                logger.warning(
+                                    f"フィルタリング後、データが空になりました。スキップします: {csv_file}"
+                                )
+                                continue
+
                             # GCS upload
                             self.gcs_client.write_csv(df, gcs_file_path)
                             logger.info(f"GCSアップロード完了: {gcs_file_path}")
 
                             # BigQuery ingest (append to raw tables)
                             try:
+                                logger.info(
+                                    f"BigQuery変換開始: {csv_file}, "
+                                    f"データタイプ: {file_data_type}, "
+                                    f"行数: {len(df)}, "
+                                    f"カラム: {list(df.columns)}"
+                                )
                                 transformed_df = self._transform_dataframe_for_bigquery(
                                     df, file_data_type
+                                )
+                                logger.info(
+                                    f"BigQuery変換完了: {csv_file}, "
+                                    f"変換後行数: {len(transformed_df)}, "
+                                    f"変換後カラム: {list(transformed_df.columns)}"
                                 )
                                 if not transformed_df.empty:
                                     if file_data_type == "A/C制御":
@@ -815,6 +950,10 @@ class Alrux8Scraper:
                                         table_name = None
 
                                     if table_name is not None:
+                                        logger.info(
+                                            f"BigQuery書き込み開始: {self.bq_dataset_id}.{table_name}, "
+                                            f"行数: {len(transformed_df)}"
+                                        )
                                         self.bq_client.write_dataframe(
                                             transformed_df,
                                             table_name=table_name,
@@ -831,11 +970,13 @@ class Alrux8Scraper:
                                         )
                                 else:
                                     logger.warning(
-                                        f"BigQueryに書き込む行がありません: {csv_file}"
+                                        f"BigQueryに書き込む行がありません: {csv_file} "
+                                        f"(変換前: {len(df)}行, 変換後: {len(transformed_df)}行)"
                                     )
                             except Exception as bq_error:
                                 logger.error(
-                                    f"BigQuery書き込みエラー ({csv_file}): {bq_error}"
+                                    f"BigQuery書き込みエラー ({csv_file}): {bq_error}",
+                                    exc_info=True,
                                 )
                         except Exception as upload_error:
                             logger.error(

@@ -38,7 +38,9 @@ async def main():
         # ストア名に応じた認証情報を取得
         store_credentials = login_info.get(GCPEnv.STORE_NAME)
         if not store_credentials:
-            print(f"❌ Login information for store '{STORE_NAME}' not found in secret")
+            print(
+                f"❌ Login information for store '{GCPEnv.STORE_NAME}' not found in secret"
+            )
             print(f"Available stores: {list(login_info.keys())}")
             sys.exit(1)
 
