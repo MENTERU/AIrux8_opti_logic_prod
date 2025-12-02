@@ -25,7 +25,7 @@ class DataPreprocessor:
         self.store_name = store_name
         self.storage = get_storage_client()
         # Logical prefixes used by storage backends (local fs or GCS)
-        self.input_prefix = f"00_InputData/{store_name}"
+        self.input_prefix = f"01_InputData/{store_name}"
         self.output_prefix = f"02_PreprocessedData/{store_name}"
         # Keep local paths for console logs
         self.data_dir = os.path.join(get_data_path("raw_data_path"), store_name)
@@ -44,7 +44,10 @@ class DataPreprocessor:
         if not cols:
             return None, None
         col = cols[0]
-        df[col] = pd.to_datetime(df[col], utc=True).dt.tz_localize(None).dt.floor("min")
+        # Normalize to datetime, convert to JST (UTC+9) so downstream analysis uses local hours
+        dt_series = pd.to_datetime(df[col], utc=True, errors="coerce")
+        dt_series = dt_series.dt.tz_convert("Asia/Tokyo")
+        df[col] = dt_series.dt.tz_localize(None).dt.floor("min")
         return df, col
 
     @staticmethod
@@ -54,7 +57,21 @@ class DataPreprocessor:
             if "A/C Name" in df.columns
             else ("Mesh ID" if "Mesh ID" in df.columns else None)
         )
-        return df.drop_duplicates(subset=[dt_col, dev_col]) if dev_col else df
+        if not dev_col:
+            return df
+        
+        # When removing duplicates, prefer records with "ON" status if "A/C ON/OFF" column exists
+        # This ensures we don't lose ON records when duplicates exist after datetime flooring
+        if "A/C ON/OFF" in df.columns:
+            # Sort so ON records come after OFF (so they're kept when using keep='last')
+            df = df.copy()
+            df["_sort_key"] = df["A/C ON/OFF"].astype(str).str.upper().map({"ON": 1, "OFF": 0}).fillna(0)
+            df = df.sort_values(by=[dt_col, dev_col, "_sort_key"], ascending=[True, True, True])
+            df = df.drop_duplicates(subset=[dt_col, dev_col], keep="last")
+            df = df.drop(columns=["_sort_key"])
+            return df
+        else:
+            return df.drop_duplicates(subset=[dt_col, dev_col])
 
     @staticmethod
     def _rm_outliers(

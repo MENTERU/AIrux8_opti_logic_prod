@@ -240,3 +240,5 @@ notes/
 job-clea-data-scraping-sa.json
 
 .ssh
+move-data-to-bigquery/
+archive/

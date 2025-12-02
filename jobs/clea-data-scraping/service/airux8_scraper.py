@@ -12,9 +12,9 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
-from playwright.async_api import async_playwright
-
 from config.config_gcp import GCPEnv
+from playwright.async_api import async_playwright
+from service.bigquery import BigQuery
 from service.storage import GCSClient
 
 # ログ設定
@@ -29,7 +29,12 @@ logger = logging.getLogger(__name__)
 
 
 class Alrux8Scraper:
-    def __init__(self):
+    def __init__(
+        self,
+        bq_dataset_id: str,
+        bq_table_ac_control_raw: str,
+        bq_table_ac_power_meter_raw: str,
+    ):
         self.browser = None
         self.page = None
         self.context = None
@@ -62,6 +67,11 @@ class Alrux8Scraper:
                 service_account_path if os.path.exists(service_account_path) else None
             ),
         )
+        # Initialize BigQuery client for ingesting scraped data
+        self.bq_client = BigQuery(project_id=GCPEnv.PROJECT_ID)
+        self.bq_dataset_id = bq_dataset_id
+        self.bq_table_ac_control_raw = bq_table_ac_control_raw
+        self.bq_table_ac_power_meter_raw = bq_table_ac_power_meter_raw
         # Create necessary directories
         self._create_directories()
 
@@ -662,8 +672,84 @@ class Alrux8Scraper:
             logger.warning(f"未知のデータタイプ: {data_type}, デフォルトパスを使用")
             return GCPEnv.INPUT_DATA_FOLDER
 
+    def _transform_dataframe_for_bigquery(
+        self, data_frame: pd.DataFrame, data_type: str
+    ) -> pd.DataFrame:
+        """スクレイピング結果のDataFrameをBigQueryスキーマに合わせて変換"""
+
+        if data_type == "A/C制御":
+            rename_mapping = {
+                "A/C Name": "AC_Name",
+                "Datetime": "Datetime",
+                "Outdoor Temp.": "Outdoor_Temp",
+                "Indoor Temp.": "Indoor_Temp",
+                "A/C Set Temperature": "AC_Set_Temperature",
+                "A/C ON/OFF": "AC_ON_OFF",
+                "A/C Mode": "AC_Mode",
+                "A/C Fan Speed": "AC_Fan_Speed",
+                "Naive Energy Level": "Naive_Energy_Level",
+                "Airux Energy Level": "Airux_Energy_Level",
+                "Outdoor Room Temp.": "Outdoor_Room_Temp",
+                "Outdoor Set Temp.": "Outdoor_Set_Temp",
+                "Room Set Temp.": "Room_Set_Temp",  # ✔ FIX
+            }
+
+            data_frame = data_frame.rename(columns=rename_mapping)
+
+            target_columns = [
+                "AC_Name",
+                "Datetime",
+                "Outdoor_Temp",
+                "Indoor_Temp",
+                "AC_Set_Temperature",
+                "AC_ON_OFF",
+                "AC_Mode",
+                "AC_Fan_Speed",
+                "Naive_Energy_Level",
+                "Airux_Energy_Level",
+                "Outdoor_Room_Temp",
+                "Outdoor_Set_Temp",
+                "Room_Set_Temp",  # ✔ FIX
+            ]
+
+        elif data_type == "A/C Power Meter":
+            rename_mapping = {
+                "Mesh ID": "Mesh_ID",
+                "PM Addr ID": "PM_Addr_ID",
+                "Datetime": "Datetime",
+                "Phase A": "Phase_A",
+                "Phase B": "Phase_B",
+                "Phase C": "Phase_C",
+            }
+
+            data_frame = data_frame.rename(columns=rename_mapping)
+
+            target_columns = [
+                "Mesh_ID",
+                "PM_Addr_ID",
+                "Datetime",
+                "Phase_A",
+                "Phase_B",
+                "Phase_C",
+            ]
+
+        else:
+            return data_frame
+
+        # Keep only expected columns
+        existing_columns = [c for c in target_columns if c in data_frame.columns]
+        data_frame = data_frame[existing_columns]
+
+        # Ensure timestamp type
+        if "Datetime" in data_frame.columns:
+            data_frame["Datetime"] = pd.to_datetime(
+                data_frame["Datetime"], errors="coerce", utc=True
+            )
+
+        return data_frame
+
     async def organize_downloaded_files(self, store_name, start_date, end_date):
-        """ダウンロードファイルの整理（ストア別フォルダ分け）とGCSへのアップロード"""
+        """ダウンロードファイルの整理（ストア別フォルダ分け）、GCSへのアップロード、BigQueryへの書き込み"""
         try:
             logger.info("ダウンロードファイルの整理開始")
 
@@ -711,8 +797,46 @@ class Alrux8Scraper:
 
                         try:
                             df = pd.read_csv(dest_path, low_memory=False)
+                            # GCS upload
                             self.gcs_client.write_csv(df, gcs_file_path)
                             logger.info(f"GCSアップロード完了: {gcs_file_path}")
+
+                            # BigQuery ingest (append to raw tables)
+                            try:
+                                transformed_df = self._transform_dataframe_for_bigquery(
+                                    df, file_data_type
+                                )
+                                if not transformed_df.empty:
+                                    if file_data_type == "A/C制御":
+                                        table_name = self.bq_table_ac_control_raw
+                                    elif file_data_type == "A/C Power Meter":
+                                        table_name = self.bq_table_ac_power_meter_raw
+                                    else:
+                                        table_name = None
+
+                                    if table_name is not None:
+                                        self.bq_client.write_dataframe(
+                                            transformed_df,
+                                            table_name=table_name,
+                                            dataset_id=self.bq_dataset_id,
+                                            if_exists="append",
+                                        )
+                                        logger.info(
+                                            f"BigQuery書き込み完了: {self.bq_dataset_id}.{table_name} "
+                                            f"({len(transformed_df)} rows)"
+                                        )
+                                    else:
+                                        logger.warning(
+                                            f"BigQueryテーブルが未定義のデータタイプ: {file_data_type}"
+                                        )
+                                else:
+                                    logger.warning(
+                                        f"BigQueryに書き込む行がありません: {csv_file}"
+                                    )
+                            except Exception as bq_error:
+                                logger.error(
+                                    f"BigQuery書き込みエラー ({csv_file}): {bq_error}"
+                                )
                         except Exception as upload_error:
                             logger.error(
                                 f"GCSアップロードエラー ({csv_file}): {upload_error}"

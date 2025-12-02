@@ -7,14 +7,18 @@ import sys
 from datetime import datetime, timedelta
 
 import pytz
-
 from service.airux8_scraper import Alrux8Scraper
 from service.secretmanager import SecretManagerClient
+
+# BigQuery dataset and table names for Clea scraping
+BQ_DATASET_CLEA = "Clea"
+BQ_TABLE_AC_CONTROL_RAW = "ac_control_raw"
+BQ_TABLE_AC_POWER_METER_RAW = "ac_power_meter_raw"
 
 
 async def main():
     """Main function to run scraping job
-    
+
     Args:
         None
 
@@ -44,8 +48,12 @@ async def main():
 
         print("✅ Successfully retrieved login information from Secret Manager")
 
-        # スクレイパー作成
-        scraper = Alrux8Scraper()
+        # スクレイパー作成（BigQueryテーブル設定を渡す）
+        scraper = Alrux8Scraper(
+            bq_dataset_id=BQ_DATASET_CLEA,
+            bq_table_ac_control_raw=BQ_TABLE_AC_CONTROL_RAW,
+            bq_table_ac_power_meter_raw=BQ_TABLE_AC_POWER_METER_RAW,
+        )
         store_name = "Clea"
         today = datetime.now(pytz.timezone("Asia/Tokyo"))
         yesterday_date = (today - timedelta(days=1)).date()
