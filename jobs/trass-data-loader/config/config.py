@@ -6,7 +6,7 @@ class DataSourceType(str, Enum):
     REMOTE = "REMOTE"
 
 
-DATA_SOURCE_TYPE = DataSourceType.REMOTE
+DATA_SOURCE_TYPE = DataSourceType.LOCAL
 
 LOCAL_INPUT_DATA_PATH = "data/00_InputData"
 LOCAL_LOADED_DATA_PATH = "data/06_LoadedData"

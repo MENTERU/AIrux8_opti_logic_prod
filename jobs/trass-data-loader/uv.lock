@@ -331,6 +331,21 @@ wheels = [
 ]
 
 [[package]]
+name = "db-dtypes"
+version = "1.4.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "pandas" },
+    { name = "pyarrow" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ce/75/7cbd2af9f3bed29c74df4c6512243b94e0dc17ca03bf82a33e45ee75501b/db_dtypes-1.4.4.tar.gz", hash = "sha256:26f53db5df1acd746b88c5647913a1b20f731c0af1b11abcb6bec5365f31098a", size = 34471, upload-time = "2025-11-11T17:21:59.221Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/00/46/398af286861992d98f5ca7e1b4662b5d6f1d29978ddc0849c52fb130e8e9/db_dtypes-1.4.4-py3-none-any.whl", hash = "sha256:32c13039982656a8598a0835f25f0e07e34c9a423e471ee60c2553240b7fcf1e", size = 18255, upload-time = "2025-11-11T17:21:57.93Z" },
+]
+
+[[package]]
 name = "fastjsonschema"
 version = "2.21.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1957,6 +1972,7 @@ name = "trass-data-loader"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "db-dtypes" },
     { name = "menteru-tools" },
     { name = "numpy" },
     { name = "pandas" },
@@ -1965,6 +1981,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "db-dtypes", specifier = ">=1.4.4" },
     { name = "menteru-tools", git = "https://github.com/MENTERU/menteru_tools.git?rev=v0.2.0" },
     { name = "numpy", specifier = ">=2.3.4" },
     { name = "pandas", specifier = ">=2.3.3" },

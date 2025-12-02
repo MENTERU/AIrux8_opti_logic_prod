@@ -10,5 +10,4 @@ class GCPEnv:
     START_DATE = os.environ.get("START_DATE")
     END_DATE = os.environ.get("END_DATE")
 
-    INPUT_DATA_PATH = os.environ.get("INPUT_DATA_PATH") or "00_InputData"
     LOADED_DATA_PATH = os.environ.get("LOADED_DATA_PATH") or "06_LoadedData"
