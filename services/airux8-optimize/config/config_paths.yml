@@ -1,6 +1,6 @@
 # ローカルパス設定（プロジェクトルートからの相対パス）
 local_paths:
-  raw_data_path: "data/00_InputData"
+  raw_data_path: "data/01_InputData"
   processed_data_path: "data/02_PreprocessedData"
   models_path: "data/03_Models"
   master_data_path: "data/01_MasterData"

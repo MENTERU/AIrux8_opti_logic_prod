@@ -179,7 +179,7 @@ def run_optimization_for_store(
                 weather_api_key=_resolve_weather_api_key(),
                 temperature_std_multiplier=5.0,
                 power_std_multiplier=5.0,
-                export_temp_range_stats=True,
+                export_temp_range_stats=False,
             )
             print("✅ 前処理完了")
             return True

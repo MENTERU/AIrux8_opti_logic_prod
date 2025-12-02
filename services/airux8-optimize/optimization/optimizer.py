@@ -1184,14 +1184,28 @@ class Optimizer:
 
                 # Extract recommended settings from the pattern
                 units_count = best_pattern["A/C ON/OFF"]
+                
+                # Handle NaN values before converting to int
+                ac_mode_value = best_pattern["A/C Mode"]
+                if pd.isna(ac_mode_value):
+                    # Default to OFF (0) if AC Mode is NaN
+                    ac_mode_value = 0
+                else:
+                    ac_mode_value = int(ac_mode_value)
+                
+                fan_speed_value = best_pattern["A/C Fan Speed"]
+                if pd.isna(fan_speed_value):
+                    # Default to AUTO (typically 0 or 1) if Fan Speed is NaN
+                    fan_speed_value = 0
+                else:
+                    fan_speed_value = int(fan_speed_value)
+                
                 result = {
                     "datetime": forecast_datetime,
                     "zone": zone,
                     "set_temp": best_pattern["A/C Set Temperature"],
-                    "mode": self._map_ac_mode(int(best_pattern["A/C Mode"])),
-                    "fan_speed": self._map_fan_speed(
-                        int(best_pattern["A/C Fan Speed"])
-                    ),
+                    "mode": self._map_ac_mode(ac_mode_value),
+                    "fan_speed": self._map_fan_speed(fan_speed_value),
                     "numb_units_on": units_count,
                     "ac_on_off": self._map_ac_on_off(units_count),
                     "power": best_pattern["adjusted_power"],

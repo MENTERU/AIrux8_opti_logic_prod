@@ -241,3 +241,85 @@ The scraping parameters (store name, date range, data types) are currently hardc
 - Playwright: Browser automation for web scraping
 - Google Cloud Secret Manager: Secure credential storage
 - Google Cloud Storage: Data storage backend
+
+
+## BigQuery Tables
+
+The scraped data is stored in BigQuery dataset `Clea` in project `airux8-opti-logic`. Below are the table schemas and commands to create them.
+
+### AC Control Table (`ac_control`)
+
+**Schema fields:**
+- `ac_name` (STRING): A/C unit identifier (e.g., "G-21", "G-24")
+- `datetime` (TIMESTAMP): Timestamp of the measurement (timezone-aware)
+- `outdoor_temp` (INTEGER): Outdoor temperature in degrees Celsius
+- `indoor_temp` (FLOAT64): Indoor temperature in degrees Celsius
+- `ac_set_temperature` (FLOAT64): A/C set temperature in degrees Celsius
+- `ac_on_off` (STRING): A/C power state ("ON" or "OFF")
+- `ac_mode` (STRING): A/C operating mode (e.g., "HEAT", "COOL")
+- `ac_fan_speed` (STRING): A/C fan speed setting (nullable, can be empty)
+- `naive_energy_level` (INTEGER): Naive energy level (0-100 scale)
+- `airux_energy_level` (INTEGER): Airux energy level (0-100 scale)
+- `outdoor_room_temp` (FLOAT64): Outdoor room temperature in degrees Celsius
+- `outdoor_set_temp` (FLOAT64): Outdoor set temperature in degrees Celsius
+- `room_set_temp` (FLOAT64): Room set temperature in degrees Celsius
+
+**Create Datasets**
+```bash
+bq --location=asia-northeast1 mk --dataset airux8-opti-logic:Clea
+bq --location=asia-northeast1 mk --dataset airux8-opti-logic:IsetanMitsukoshi
+```
+
+**Create table command:**
+```bash
+cd schema
+
+bq mk --table \
+  --project_id=airux8-opti-logic \
+  --dataset_id=Clea \
+  --description="AC control data scraped from Airux8 web interface" \
+  --time_partitioning_field=Datetime \
+  --time_partitioning_type=DAY \
+  --clustering_fields=Datetime,AC_Name \
+  ac_control_raw \
+  ./ac_control_schema.json
+
+```
+
+### AC Power Meter Table (`ac_power_meter`)
+
+**Schema fields:**
+- `mesh_id` (INTEGER): Mesh network identifier
+- `pm_addr_id` (INTEGER): Power meter address identifier
+- `datetime` (TIMESTAMP): Timestamp of the measurement (timezone-aware)
+- `phase_a` (INTEGER): Power reading for Phase A in watts
+- `phase_b` (INTEGER): Power reading for Phase B in watts
+- `phase_c` (INTEGER): Power reading for Phase C in watts
+
+**Create table command:**
+```bash
+cd schema 
+
+bq mk --table \
+  --project_id=airux8-opti-logic \
+  --dataset_id=Clea \
+  --description="AC power meter data scraped from nodes" \
+  --time_partitioning_field=datetime \
+  --time_partitioning_type=DAY \
+  --clustering_fields=Datetime,Mesh_ID \
+  ac_power_meter_raw \
+  ./ac_power_meter_schema.json
+
+
+```
+
+### Verify Tables Created
+
+```bash
+# List tables in Clea dataset
+bq ls --project_id=airux8-opti-logic Clea
+
+# Describe table schemas
+bq show --schema --format=prettyjson --project_id=airux8-opti-logic Clea.ac_control
+bq show --schema --format=prettyjson --project_id=airux8-opti-logic Clea.ac_power_meter
+```

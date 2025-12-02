@@ -15,4 +15,4 @@ build
 *.log
 .DS_Store
 
-config/job-clea-data-scraping-sa.json
+# config/job-clea-data-scraping-sa.json

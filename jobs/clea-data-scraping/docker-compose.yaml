@@ -5,10 +5,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      cache_from:
-        - airux8_opti_logic-job-clea-data-scraping:latest
     volumes:
-      - .:/app
+      - ${PWD}:/app
       - job-clea-venv:/app/.venv
     working_dir: /app
     # Runs main.py directly (same as Cloud Run Jobs)
@@ -24,7 +22,7 @@ services:
     ports:
       - "8080:8080"
 
-    restart: unless-stopped
+    restart: "no"
     environment:
       # 開発環境変数
       - PYTHONDONTWRITEBYTECODE=1

@@ -225,7 +225,12 @@ class OptimizerRunner:
             self.load_weather_data(start_date, end_date)
 
             # Run optimization
-            self.optimizer = Optimizer(store_name=self.store_name)
+            # Enable use_operating_hours to respect zone operating hours from master data
+            # This ensures hours outside operating hours (e.g., midnight for Area 3/4) are not optimized
+            self.optimizer = Optimizer(
+                store_name=self.store_name,
+                use_operating_hours=False,
+            )
             result_df = self.optimizer.optimize_all_zones(
                 forecast_df=self.weather_data,
                 features_csv_path=self.features_csv_path,
