@@ -182,7 +182,7 @@ jobs:
                   --min-backoff=60s \
                   --max-backoff=60s \
                   --max-retry-duration=300s
-              fi
+            fi
             elif [ "$dir_lower" = "trass-data-loader" ]; then
               gcloud run jobs deploy $JOB_NAME \
                 --region=${{ vars.REGION }} \
