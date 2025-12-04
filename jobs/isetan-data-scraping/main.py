@@ -64,10 +64,10 @@ async def main():
             bq_table_ac_power_meter_raw=GCPEnv.BQ_TABLE_AC_POWER_METER_RAW,
         )
 
-        # Original date calculation (temporarily commented out)
+        # Original date calculation
         today = datetime.now(pytz.timezone("Asia/Tokyo"))
         yesterday_date = (today - timedelta(days=1)).date()
-        # # Set both start and end date to yesterday (date only, no time components)
+        # Set both start and end date to yesterday (date only, no time components)
         start_date = datetime(
             yesterday_date.year,
             yesterday_date.month,
@@ -81,7 +81,7 @@ async def main():
             tzinfo=pytz.timezone("Asia/Tokyo"),
         )
 
-        # TODO: Todelete Temporary date range: 2024-08-01 to 2024-08-31
+        # You can specify the date range: 2024-08-01 to 2024-08-31
         # start_date = datetime(
         #     2024,
         #     8,
