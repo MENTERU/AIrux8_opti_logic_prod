@@ -769,9 +769,62 @@ class Alrux8Scraper:
         # Ensure timestamp type and filter out rows with null Datetime
         if "Datetime" in data_frame.columns:
             original_datetime_count = len(data_frame)
-            data_frame["Datetime"] = pd.to_datetime(
-                data_frame["Datetime"], errors="coerce", utc=True
+
+            # Save original datetime strings for logging
+            original_datetime_strs = data_frame["Datetime"].copy()
+            min_datetime_str = original_datetime_strs.min()
+            max_datetime_str = original_datetime_strs.max()
+            logger.info(
+                f"Datetime変換前の範囲 (JST): {min_datetime_str} ～ {max_datetime_str}"
             )
+
+            # Parse datetime (may be timezone-aware)
+            data_frame["Datetime"] = pd.to_datetime(
+                data_frame["Datetime"], errors="coerce"
+            )
+
+            # Convert to naive datetime (remove timezone but keep time values as-is)
+            # This preserves the original time (e.g., 23:55 stays as 23:55, not converted to 14:55 UTC)
+            if data_frame["Datetime"].dt.tz is not None:
+                # If timezone-aware, extract naive components to preserve time values
+                # This keeps the time values unchanged (23:55 JST becomes 23:55 naive)
+                # We use apply to extract components and rebuild as naive datetime
+                def to_naive(dt):
+                    if pd.isna(dt) or dt.tz is None:
+                        return dt
+                    # Extract components and create naive datetime
+                    return pd.Timestamp(
+                        year=dt.year,
+                        month=dt.month,
+                        day=dt.day,
+                        hour=dt.hour,
+                        minute=dt.minute,
+                        second=dt.second,
+                        microsecond=dt.microsecond,
+                    )
+
+                data_frame["Datetime"] = data_frame["Datetime"].apply(to_naive)
+                logger.info(
+                    "タイムゾーン情報を削除し、時刻値をそのまま保持しました (naive datetime)"
+                )
+
+            # Check for parsing errors
+            failed_parse_mask = data_frame["Datetime"].isna()
+            failed_parse_count = failed_parse_mask.sum()
+
+            if failed_parse_count > 0:
+                # Log examples of failed parses using original strings
+                failed_indices = data_frame.loc[failed_parse_mask].index[:5]
+                failed_examples = (
+                    original_datetime_strs.loc[failed_indices].head(3).tolist()
+                )
+                logger.warning(
+                    f"Datetime解析失敗: {failed_parse_count}行 "
+                    f"(元の行数: {original_datetime_count})"
+                )
+                if failed_examples:
+                    logger.warning(f"解析失敗したDatetimeの例: {failed_examples}")
+
             # Filter out rows where Datetime is null (BigQuery requires non-null Datetime)
             data_frame = data_frame[data_frame["Datetime"].notna()].copy()
             filtered_datetime_count = original_datetime_count - len(data_frame)
@@ -780,6 +833,17 @@ class Alrux8Scraper:
                     f"null Datetimeの行をスキップ: {filtered_datetime_count}行 "
                     f"({original_datetime_count} → {len(data_frame)})"
                 )
+
+            # Log final datetime range (naive, no timezone)
+            if len(data_frame) > 0:
+                valid_datetimes = data_frame["Datetime"].dropna()
+                if len(valid_datetimes) > 0:
+                    min_dt = valid_datetimes.min()
+                    max_dt = valid_datetimes.max()
+                    logger.info(
+                        f"最終Datetime範囲 (naive, タイムゾーンなし): {min_dt} ～ {max_dt} "
+                        f"(合計 {len(valid_datetimes)} 行)"
+                    )
 
         # Filter out rows with null required fields (for AC Power Meter)
         if data_type == "A/C Power Meter":
@@ -811,7 +875,202 @@ class Alrux8Scraper:
 
         return data_frame
 
-    async def organize_downloaded_files(self, store_name, start_date, end_date):
+    async def process_existing_files(self, store_name):
+        """既存のCSVファイルを処理してBigQueryにアップロード（スクレイピングなし）"""
+        try:
+            logger.info("既存ファイルの処理開始")
+
+            # ストア別フォルダ
+            store_folder = self.base_dir / "alrux8_data" / store_name
+
+            if not store_folder.exists():
+                logger.error(f"ストアフォルダが見つかりません: {store_folder}")
+                return False
+
+            # フォルダ内の全CSVファイルを取得
+            csv_files = [f for f in os.listdir(str(store_folder)) if f.endswith(".csv")]
+
+            if not csv_files:
+                logger.warning(f"CSVファイルが見つかりません: {store_folder}")
+                return False
+
+            logger.info(f"処理対象ファイル数: {len(csv_files)}")
+
+            # ファイルをデータタイプ別に分類
+            for csv_file in csv_files:
+                file_path = store_folder / csv_file
+
+                # ファイル名からデータタイプを判定
+                file_data_type = None
+                if "ac-control" in csv_file.lower() or "ac制御" in csv_file.lower():
+                    file_data_type = "A/C制御"
+                elif (
+                    "ac-power-meter" in csv_file.lower() or "power" in csv_file.lower()
+                ):
+                    file_data_type = "A/C Power Meter"
+                else:
+                    logger.warning(f"データタイプを判定できません: {csv_file}")
+                    continue
+
+                try:
+                    logger.info(
+                        f"ファイル処理開始: {csv_file}, データタイプ: {file_data_type}"
+                    )
+                    df = pd.read_csv(file_path, low_memory=False)
+
+                    # Filter out rows with empty AC names before processing
+                    original_row_count = len(df)
+                    if file_data_type == "A/C制御":
+                        # For AC Control, filter by "A/C Name" column
+                        ac_name_column = "A/C Name"
+                        if ac_name_column in df.columns:
+                            df = df[
+                                df[ac_name_column].notna()
+                                & (df[ac_name_column].astype(str).str.strip() != "")
+                            ].copy()
+                            filtered_count = original_row_count - len(df)
+                            if filtered_count > 0:
+                                logger.info(
+                                    f"空のAC名の行をスキップ: {filtered_count}行 "
+                                    f"({original_row_count} → {len(df)})"
+                                )
+                        else:
+                            logger.warning(
+                                f"AC名カラム '{ac_name_column}' が見つかりません: {csv_file}"
+                            )
+                    elif file_data_type == "A/C Power Meter":
+                        # For Power Meter, check Mesh_ID and PM_Addr_ID
+                        mesh_id_column = "Mesh ID"
+                        pm_addr_column = "PM Addr ID"
+                        logger.info(
+                            f"AC Power Meter フィルタリング: "
+                            f"カラム存在確認 - Mesh ID: {mesh_id_column in df.columns}, "
+                            f"PM Addr ID: {pm_addr_column in df.columns}, "
+                            f"全カラム: {list(df.columns)}"
+                        )
+                        if (
+                            mesh_id_column in df.columns
+                            and pm_addr_column in df.columns
+                        ):
+                            df = df[
+                                df[mesh_id_column].notna() & df[pm_addr_column].notna()
+                            ].copy()
+                            filtered_count = original_row_count - len(df)
+                            if filtered_count > 0:
+                                logger.info(
+                                    f"空のMesh_ID/PM_Addr_IDの行をスキップ: {filtered_count}行 "
+                                    f"({original_row_count} → {len(df)})"
+                                )
+                        else:
+                            logger.warning(
+                                f"AC Power Meter フィルタリング: "
+                                f"必要なカラムが見つかりません。フィルタリングをスキップします。"
+                            )
+
+                    # Skip if dataframe is empty after filtering
+                    if df.empty:
+                        logger.warning(
+                            f"フィルタリング後、データが空になりました。スキップします: {csv_file}"
+                        )
+                        continue
+
+                    # GCS upload - TEMPORARILY COMMENTED OUT
+                    # gcs_path = self._get_gcs_path_for_data_type(file_data_type)
+                    # gcs_file_path = f"{gcs_path}{csv_file}"
+                    # self.gcs_client.write_csv(df, gcs_file_path)
+                    # logger.info(f"GCSアップロード完了: {gcs_file_path}")
+
+                    # BigQuery ingest (append to raw tables)
+                    try:
+                        logger.info(
+                            f"BigQuery変換開始: {csv_file}, "
+                            f"データタイプ: {file_data_type}, "
+                            f"行数: {len(df)}, "
+                            f"カラム: {list(df.columns)}"
+                        )
+
+                        # Log original datetime range before transformation
+                        if "Datetime" in df.columns:
+                            datetime_strs = df["Datetime"].astype(str)
+                            min_datetime_str = datetime_strs.min()
+                            max_datetime_str = datetime_strs.max()
+                            logger.info(
+                                f"元のDatetime範囲 (JST): {min_datetime_str} ～ {max_datetime_str}"
+                            )
+
+                        transformed_df = self._transform_dataframe_for_bigquery(
+                            df, file_data_type
+                        )
+
+                        # Log transformed datetime range (naive, no timezone conversion)
+                        if "Datetime" in transformed_df.columns:
+                            valid_datetimes = transformed_df["Datetime"].dropna()
+                            if len(valid_datetimes) > 0:
+                                min_datetime_naive = valid_datetimes.min()
+                                max_datetime_naive = valid_datetimes.max()
+                                logger.info(
+                                    f"変換後Datetime範囲 (naive, タイムゾーンなし): {min_datetime_naive} ～ {max_datetime_naive}"
+                                )
+                            else:
+                                logger.warning("変換後、有効なDatetimeがありません")
+
+                        logger.info(
+                            f"BigQuery変換完了: {csv_file}, "
+                            f"変換後行数: {len(transformed_df)}, "
+                            f"変換後カラム: {list(transformed_df.columns)}"
+                        )
+                        if not transformed_df.empty:
+                            if file_data_type == "A/C制御":
+                                table_name = self.bq_table_ac_control_raw
+                            elif file_data_type == "A/C Power Meter":
+                                table_name = self.bq_table_ac_power_meter_raw
+                            else:
+                                table_name = None
+
+                            if table_name is not None:
+                                logger.info(
+                                    f"BigQuery書き込み開始: {self.bq_dataset_id}.{table_name}, "
+                                    f"行数: {len(transformed_df)}"
+                                )
+                                self.bq_client.write_dataframe(
+                                    transformed_df,
+                                    table_name=table_name,
+                                    dataset_id=self.bq_dataset_id,
+                                    if_exists="append",
+                                )
+                                logger.info(
+                                    f"BigQuery書き込み完了: {self.bq_dataset_id}.{table_name} "
+                                    f"({len(transformed_df)} rows)"
+                                )
+                            else:
+                                logger.warning(
+                                    f"BigQueryテーブルが未定義のデータタイプ: {file_data_type}"
+                                )
+                        else:
+                            logger.warning(
+                                f"BigQueryに書き込む行がありません: {csv_file} "
+                                f"(変換前: {len(df)}行, 変換後: {len(transformed_df)}行)"
+                            )
+                    except Exception as bq_error:
+                        logger.error(
+                            f"BigQuery書き込みエラー ({csv_file}): {bq_error}",
+                            exc_info=True,
+                        )
+                except Exception as file_error:
+                    logger.error(
+                        f"ファイル処理エラー ({csv_file}): {file_error}",
+                        exc_info=True,
+                    )
+                    continue
+
+            logger.info("既存ファイルの処理完了")
+            return True
+
+        except Exception as e:
+            logger.error(f"既存ファイル処理エラー: {e}", exc_info=True)
+            return False
+
+    async def organize_upload_files(self, store_name, start_date, end_date):
         """ダウンロードファイルの整理（ストア別フォルダ分け）、GCSへのアップロード、BigQueryへの書き込み"""
         try:
             logger.info("ダウンロードファイルの整理開始")
@@ -921,7 +1180,7 @@ class Alrux8Scraper:
                                 )
                                 continue
 
-                            # GCS upload - TEMPORARILY COMMENTED OUT
+                            # GCS upload
                             self.gcs_client.write_csv(df, gcs_file_path)
                             logger.info(f"GCSアップロード完了: {gcs_file_path}")
 
@@ -980,16 +1239,11 @@ class Alrux8Scraper:
                                 )
                         except Exception as upload_error:
                             logger.error(
-                                f"GCSアップロードエラー ({csv_file}): {upload_error}"
-                            )
-                            logger.debug(
-                                f"GCSアップロードは一時的に無効化されています ({csv_file})"
+                                f"ファイル処理エラー ({csv_file}): {upload_error}"
                             )
                     else:
                         logger.warning(f"データタイプが見つかりません: {csv_file}")
-
-                # Delete downloads folder after all files are processed
-                try:
+            try:
                     if downloads_dir.exists():
                         shutil.rmtree(str(downloads_dir))
                         logger.info("downloadsフォルダを削除しました")
@@ -1004,6 +1258,7 @@ class Alrux8Scraper:
                         logger.info("alrux8_dataフォルダを削除しました")
                 except Exception as cleanup_error:
                     logger.warning(f"alrux8_dataフォルダの削除エラー: {cleanup_error}")
+            Delete downloads folder after all files are processed
 
             return True
 
@@ -1132,7 +1387,7 @@ class Alrux8Scraper:
                 await self.page.wait_for_timeout(1000)  # フロア間の待機時間を調整
 
             # ダウンロードファイルの整理とGCSアップロード
-            await self.organize_downloaded_files(store_name, start_date, end_date)
+            await self.organize_upload_files(store_name, start_date, end_date)
 
             # Clear downloaded files tracking for next run
             self.downloaded_files = []
