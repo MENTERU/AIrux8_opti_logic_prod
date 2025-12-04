@@ -1243,7 +1243,8 @@ class Alrux8Scraper:
                             )
                     else:
                         logger.warning(f"データタイプが見つかりません: {csv_file}")
-            try:
+                # Delete downloads folder after all files are processed
+                try:
                     if downloads_dir.exists():
                         shutil.rmtree(str(downloads_dir))
                         logger.info("downloadsフォルダを削除しました")
@@ -1258,7 +1259,6 @@ class Alrux8Scraper:
                         logger.info("alrux8_dataフォルダを削除しました")
                 except Exception as cleanup_error:
                     logger.warning(f"alrux8_dataフォルダの削除エラー: {cleanup_error}")
-            Delete downloads folder after all files are processed
 
             return True
 
