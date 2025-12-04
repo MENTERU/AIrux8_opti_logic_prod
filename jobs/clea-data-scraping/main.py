@@ -80,6 +80,19 @@ async def main():
             tzinfo=pytz.timezone("Asia/Tokyo"),
         )
         data_types = ["A/C Power Meter", "A/C制御"]
+        # You can specify the date range: 2024-08-01 to 2024-08-31
+        # start_date = datetime(
+        #     2024,
+        #     8,
+        #     1,
+        #     tzinfo=pytz.timezone("Asia/Tokyo"),
+        # )
+        # end_date = datetime(
+        #     2024,
+        #     8,
+        #     31,
+        #     tzinfo=pytz.timezone("Asia/Tokyo"),
+        # )
 
         print(f"=== {GCPEnv.STORE_NAME} データ取得開始 ===")
         print(
