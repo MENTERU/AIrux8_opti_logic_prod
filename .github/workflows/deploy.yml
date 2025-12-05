@@ -232,6 +232,36 @@ jobs:
           done
 
 
+      # 🔹 Deploy Changed Cloud Functions
+      - name: Deploy Changed Cloud Functions
+        if: ${{ env.CHANGED_FUNCTIONS != '' }}
+        run: |
+          for dir in $CHANGED_FUNCTIONS; do
+            dir_lower=$(echo "$dir" | tr '[:upper:]' '[:lower:]')
+            
+            # Skip if directory doesn't exist
+            if [ ! -d "./functions/$dir" ]; then
+              echo "Skipping $dir - directory does not exist"
+              continue
+            fi
+            
+            if [ "$dir_lower" = "func-check-clea-files" ]; then
+              echo "Deploying Cloud Function: ${dir_lower}-${{ vars.DEV_ENV }}"
+              gcloud functions deploy ${dir_lower}-${{ vars.DEV_ENV }} \
+                --gen2 \
+                --runtime=python311 \
+                --region=asia-northeast1 \
+                --source=./functions/$dir_lower \
+                --entry-point=check_clea_files \
+                --trigger-http \
+                --allow-unauthenticated \
+                --service-account=${{ vars.FUNC_CHECK_CLEA_FILES_SA }} \
+                --set-env-vars BUCKET_NAME=${{ vars.BUCKET_NAME }} \
+                --set-secrets SLACK_WEBHOOK_URL=SLACK_WEBHOOK_URL:latest
+            fi
+          done
+          
+          
       # 🔹 Detect Changed Services
       - name: Detect Changed Services
         id: check_services
