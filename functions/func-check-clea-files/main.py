@@ -10,7 +10,7 @@ from google.cloud import storage
 # Environment variables
 BUCKET_NAME = os.getenv("BUCKET_NAME", "airux8-opti-logic-prod")
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
-MONITORED_FOLDER = "4_PlanningData/Clea/"
+MONITORED_FOLDERS = ["4_PlanningData/Clea/"]
 
 # Timezone for consistent date handling
 TOKYO_TZ = pytz.timezone("Asia/Tokyo")
@@ -110,13 +110,7 @@ def check_required_files(file_list: List[str], target_date: str) -> Dict[str, bo
 def check_clea_files(request):
     """
     Cloud Function entry point.
-    Checks for required schedule files in 4_PlanningData/Clea/ and sends Slack alerts if missing.
-
-    Args:
-        request: HTTP request object
-
-    Returns:
-        HTTP response
+    Checks for required schedule files in monitored folders and sends Slack alerts if missing.
     """
     try:
         print("[AIrux8 Optimize] Starting file existence check")
@@ -127,39 +121,57 @@ def check_clea_files(request):
         current_time_str = now_tokyo.strftime("%Y-%m-%d %H:%M:%S JST")
 
         print(f"Checking for files with date: {today_str}")
-        print(f"Folder: {MONITORED_FOLDER}")
+        print(f"Folders: {MONITORED_FOLDERS}")
         print(f"Bucket: {BUCKET_NAME}")
 
-        # List all files in the folder
-        all_files = list_files_in_folder(BUCKET_NAME, MONITORED_FOLDER)
+        # Track results across all folders
+        all_missing_files = []
+        all_folder_results = {}
 
-        if not all_files:
-            error_msg = f"⚠️ Could not list files in {MONITORED_FOLDER}"
-            print(error_msg)
-            if SLACK_WEBHOOK_URL:
-                alert = f"🚨 **[AIrux8 Optimize] File Check Error**\n\n{error_msg}\nBucket: `{BUCKET_NAME}`\nTime: {current_time_str}"
-                send_slack_alert(alert, SLACK_WEBHOOK_URL)
-            return {"error": error_msg}, 500
+        # Loop through each monitored folder
+        for folder in MONITORED_FOLDERS:
+            print(f"\n--- Checking folder: {folder} ---")
+            
+            # List all files in the folder
+            all_files = list_files_in_folder(BUCKET_NAME, folder)
 
-        # Check for required files
-        file_status = check_required_files(all_files, today_str)
+            if not all_files:
+                error_msg = f"⚠️ Could not list files in {folder}"
+                print(error_msg)
+                all_missing_files.append(f"❌ **Folder: {folder}**\n{error_msg}")
+                all_folder_results[folder] = {"error": "Could not list files"}
+                continue
 
-        # Prepare alert messages for missing files
-        missing_files = []
+            # Check for required files
+            file_status = check_required_files(all_files, today_str)
 
-        if not file_status["unit_schedule"]:
-            missing_files.append(f"❌ **Missing unit_schedule file**\nExpected: `unit_schedule_{today_str}_*.csv`")
-            print(f"❌ Missing: unit_schedule_{today_str}_*.csv")
+            # Track missing files for this folder
+            folder_missing = []
 
-        if not file_status["zone_schedule"]:
-            missing_files.append(f"❌ **Missing zone_schedule file**\nExpected: `zone_schedule_{today_str}_*.csv`")
-            print(f"❌ Missing: zone_schedule_{today_str}_*.csv")
+            if not file_status["unit_schedule"]:
+                folder_missing.append(f"❌ **Missing unit_schedule file**\nExpected: `unit_schedule_{today_str}_*.csv`")
+                print(f"❌ Missing: unit_schedule_{today_str}_*.csv")
+
+            if not file_status["zone_schedule"]:
+                folder_missing.append(f"❌ **Missing zone_schedule file**\nExpected: `zone_schedule_{today_str}_*.csv`")
+                print(f"❌ Missing: zone_schedule_{today_str}_*.csv")
+
+            # Add folder context to missing files
+            if folder_missing:
+                all_missing_files.append(f"📁 **Folder: {folder}**\n" + "\n".join(folder_missing))
+
+            # Store folder results
+            all_folder_results[folder] = {
+                "unit_schedule": file_status["unit_schedule"],
+                "zone_schedule": file_status["zone_schedule"],
+                "all_present": all(file_status.values())
+            }
 
         # Send Slack alert if any files are missing
-        if missing_files and SLACK_WEBHOOK_URL:
+        if all_missing_files and SLACK_WEBHOOK_URL:
             alert_header = f"🚨 **[AIrux8 Optimize] Missing Planning Data Files**\n\n"
-            alert_body = "\n\n".join(missing_files)
-            alert_footer = f"\n\nFolder: `{BUCKET_NAME}/{MONITORED_FOLDER}`\nTime: {current_time_str}"
+            alert_body = "\n\n".join(all_missing_files)
+            alert_footer = f"\n\nBucket: `{BUCKET_NAME}`\nTime: {current_time_str}"
             
             combined_message = alert_header + alert_body + alert_footer
 
@@ -174,21 +186,18 @@ def check_clea_files(request):
         response_data = {
             "timestamp": now_tokyo.isoformat(),
             "bucket": BUCKET_NAME,
-            "folder": MONITORED_FOLDER,
+            "folders": MONITORED_FOLDERS,
             "target_date": today_str,
-            "checks": {
-                "unit_schedule": file_status["unit_schedule"],
-                "zone_schedule": file_status["zone_schedule"],
-            },
-            "all_files_present": all(file_status.values()),
-            "alerts_sent": len(missing_files) > 0,
+            "folder_results": all_folder_results,
+            "all_files_present": all(result.get("all_present", False) for result in all_folder_results.values()),
+            "alerts_sent": len(all_missing_files) > 0,
         }
 
-        if missing_files:
-            response_data["missing_files"] = missing_files
+        if all_missing_files:
+            response_data["missing_files"] = all_missing_files
             print("⚠️ File check completed with missing files")
         else:
-            print("✅ All required files are present")
+            print("✅ All required files are present in all folders")
 
         return response_data, 200
 
