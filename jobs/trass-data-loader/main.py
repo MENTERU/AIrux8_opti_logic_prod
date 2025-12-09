@@ -182,7 +182,10 @@ def main():
 
         bigquery_client = bigquery.BigQuery(project_id=GCPEnv.PROJECT_ID)
 
-        store_names = list_datasets(gc_storage_client)
+        if GCPEnv.FACILITY_ID:
+            store_names = [GCPEnv.FACILITY_ID]
+        else:
+            store_names = list_datasets(gc_storage_client)
 
         logger.info(f"Stores detected: {store_names}")
 
