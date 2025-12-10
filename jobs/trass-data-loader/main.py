@@ -1,7 +1,8 @@
+import json
 import logging
 import os
-import re
 import sys
+import uuid
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 
@@ -10,6 +11,7 @@ import pandas as pd
 import pytz
 from config.config import *
 from config.config_gcp import GCPEnv
+from google.cloud import pubsub_v1
 from menteru_tools.gcp_service import bigquery, storage
 
 # ==========================================
@@ -264,6 +266,30 @@ def main():
                     logger.warning(f"No ODU data to save for store {store_name}")
                     raise Exception(f"No ODU data to save for store {store_name}")
 
+                publisher = pubsub_v1.PublisherClient()
+                topic = publisher.topic_path(
+                    "airux8-opti-logic", "trigger-svc-central-hvac-preprocess"
+                )
+
+                event = {
+                    "specversion": "1.0",
+                    "id": str(uuid.uuid4()),
+                    "source": "//run.googleapis.com/services/job-trass-data-loader-stg",
+                    "type": "job-trass-data-loader-stg.complete",
+                    "datacontenttype": "application/json",
+                    "subject": "job-trass-data-loader-stg",
+                    "data": {
+                        "facility_id": store_name,
+                        "bucket_id": GCPEnv.BUCKET_ID,
+                        "gcs_project_id": GCPEnv.PROJECT_ID,
+                    },
+                }
+
+                future = publisher.publish(topic, json.dumps(event).encode("utf-8"))
+                future.result()
+
+                logging.info(f"✅ [{store_name}] Pub/Sub message published: {event}!")
+
             except Exception as e:
                 logger.error(f"Facility {store_name} failed: {e}")
                 failed_facilities.add(store_name)
@@ -276,6 +302,7 @@ def main():
             return 1
 
         logger.info("🎉 Data pipeline completed successfully for all facilities!")
+
         return 0
 
     except Exception as e:
