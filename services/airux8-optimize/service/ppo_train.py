@@ -7,13 +7,6 @@ from typing import Any, Optional, Type, Union
 
 import pandas as pd
 import torch
-from tianshou.data import Batch as TBatch
-from tianshou.data import Collector, VectorReplayBuffer
-from tianshou.env import SubprocVectorEnv
-from tianshou.trainer import OnpolicyTrainer
-from tianshou.utils import TensorboardLogger
-from torch.utils.tensorboard import SummaryWriter
-
 from deep_reinforcement_learning.agent.ppo_agent import create_ppo_for_hvac
 from deep_reinforcement_learning.const import (
     set_fan_range,
@@ -34,6 +27,12 @@ from deep_reinforcement_learning.utils.record import (
 from input_info.crea_building_information import (
     CreaBuilding,
 )  # ← 実際のパスに合わせて修正
+from tianshou.data import Batch as TBatch
+from tianshou.data import Collector, VectorReplayBuffer
+from tianshou.env import SubprocVectorEnv
+from tianshou.trainer import OnpolicyTrainer
+from tianshou.utils import TensorboardLogger
+from torch.utils.tensorboard import SummaryWriter
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -54,18 +53,18 @@ class AircontrolPPOTrainConfig:
     # PPO ハイパーパラメータ
     lr: float = 3e-4
     discount_factor: float = 0.9
-    gae_lambda: float = 0.95
-    eps_clip: float = 0.18
+    gae_lambda: float = 0.99
+    eps_clip: float = 0.2
     value_clip: bool = True
     vf_coef: float = 0.5
-    ent_coef: float = 0.0
+    ent_coef: float = 0.001
     max_grad_norm: float = 0.5
     advantage_normalization: bool = True
     reward_normalization: bool = True
     deterministic_eval: bool = True
 
     # Trainer ハイパーパラメータ
-    max_epoch: int = 20
+    max_epoch: int = 50
     step_per_epoch: int = 480
     step_per_collect: int = 240
     repeat_per_collect: int = 5

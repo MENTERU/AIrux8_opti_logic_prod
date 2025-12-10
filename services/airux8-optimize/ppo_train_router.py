@@ -8,13 +8,6 @@ from typing import List, Sequence, Union
 import numpy as np
 import pandas as pd
 import torch
-from tianshou.data import Batch as TBatch
-from tianshou.data import Collector, VectorReplayBuffer
-from tianshou.env import SubprocVectorEnv
-from tianshou.trainer import OnpolicyTrainer
-from tianshou.utils import TensorboardLogger
-from torch.utils.tensorboard import SummaryWriter
-
 from deep_reinforcement_learning.agent.ppo_agent import (
     actions_to_frame,
     create_ppo_for_hvac,
@@ -42,6 +35,12 @@ from deep_reinforcement_learning.utils.record import (
 )
 from input_info.crea_building_information import CreaBuilding
 from service.ppo_train import AircontrolPPOTrainConfig, AircontrolPPOTrainer
+from tianshou.data import Batch as TBatch
+from tianshou.data import Collector, VectorReplayBuffer
+from tianshou.env import SubprocVectorEnv
+from tianshou.trainer import OnpolicyTrainer
+from tianshou.utils import TensorboardLogger
+from torch.utils.tensorboard import SummaryWriter
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -710,11 +709,13 @@ class Trainer:
 
 
 if __name__ == "__main__":
-    start = pd.Timestamp("2025-09-10 07:00:00")
-    end = pd.Timestamp("2025-09-11 07:00:00")
-    ppo = Trainer("data/base/hourly_filled.csv", "data/base/hourly_filled.csv", "Area1")
+    start = pd.Timestamp("2025-08-10 07:00:00")
+    end = pd.Timestamp("2025-08-11 07:00:00")
+    ppo = Trainer(
+        "data/base/hourly_filled.csv", "data/base/hourly_filled.csv", "MeetingRoom"
+    )
     ppo.setup()
     ppo.load(start_term=start, end_term=end)
-    # ppo.train_run()
-    ppo.reproduce(start_term=start, end_term=end)
+    ppo.train_run()
+    # ppo.reproduce(start_term=start, end_term=end)
     # ppo.update_train(start_term=start, end_term=end, area_name="Area1")
