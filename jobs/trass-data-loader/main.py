@@ -268,16 +268,17 @@ def main():
 
                 publisher = pubsub_v1.PublisherClient()
                 topic = publisher.topic_path(
-                    "airux8-opti-logic", "trigger-svc-central-hvac-preprocess"
+                    GCPEnv.PROJECT_ID,
+                    f"trigger-svc-central-hvac-preprocess-{store_name}",
                 )
 
                 event = {
                     "specversion": "1.0",
                     "id": str(uuid.uuid4()),
-                    "source": "//run.googleapis.com/services/job-trass-data-loader-stg",
-                    "type": "job-trass-data-loader-stg.complete",
+                    "source": "//run.googleapis.com/services/job-trass-data-loader-prod",
+                    "type": "job-trass-data-loader-prod.complete",
                     "datacontenttype": "application/json",
-                    "subject": "job-trass-data-loader-stg",
+                    "subject": "job-trass-data-loader-prod",
                     "data": {
                         "facility_id": store_name,
                         "bucket_id": GCPEnv.BUCKET_ID,
