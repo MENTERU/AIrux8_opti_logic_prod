@@ -2,6 +2,8 @@
 #    uv pip compile pyproject.toml --output-file requirements.txt --no-deps
 db-dtypes==1.4.4
     # via trass-data-loader (pyproject.toml)
+google-cloud-pubsub==2.33.0
+    # via trass-data-loader (pyproject.toml)
 menteru-tools @ git+ssh://git@github.com/MENTERU/menteru_tools.git@v0.2.0
     # via trass-data-loader (pyproject.toml)
 numpy==2.3.5
