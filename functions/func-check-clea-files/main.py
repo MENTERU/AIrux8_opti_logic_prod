@@ -10,7 +10,7 @@ from google.cloud import storage
 # Environment variables
 BUCKET_NAME = os.getenv("BUCKET_NAME", "airux8-opti-logic-prod")
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
-MONITORED_FOLDERS = ["4_PlanningData/Clea/"]
+MONITORED_FOLDERS = ["04_PlanningData/Clea/"]
 
 # Timezone for consistent date handling
 TOKYO_TZ = pytz.timezone("Asia/Tokyo")
