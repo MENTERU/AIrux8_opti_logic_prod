@@ -360,7 +360,7 @@ curl -X POST http://localhost:8080
 2. **File existence check failing**
    - Verify service account has GCS read permissions
    - Check if bucket name is correct
-   - Verify folder path `4_PlanningData/Clea/` is correct
+   - Verify folder path `04_PlanningData/Clea/` is correct
 
 3. **Cloud Scheduler unable to call function**
    - Verify service account has appropriate permissions
