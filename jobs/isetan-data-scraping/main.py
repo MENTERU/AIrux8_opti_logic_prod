@@ -13,7 +13,9 @@ from service.secretmanager import SecretManagerClient
 
 
 async def main():
-    """Main function to run scraping job
+    """
+    Main function to run scraping job
+
 
     Args:
         None
