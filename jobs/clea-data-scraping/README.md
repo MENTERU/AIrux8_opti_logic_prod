@@ -303,7 +303,7 @@ cd schema
 bq mk --table \
   --project_id=airux8-opti-logic \
   --dataset_id=Clea \
-  --description="AC power meter data scraped from nodes" \
+  --description="AC power meter data scraped from customer website" \
   --time_partitioning_field=datetime \
   --time_partitioning_type=DAY \
   --clustering_fields=Datetime,Mesh_ID \

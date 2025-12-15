@@ -1,11 +1,15 @@
 import logging
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 import pandas as pd
 import pytz
 from google.api_core import exceptions as api_exceptions
 from google.cloud import bigquery
 from google.cloud.exceptions import GoogleCloudError, NotFound
+
+# JST timezone for converting timestamps
+JST = pytz.timezone("Asia/Tokyo")
 
 logger = logging.getLogger(__name__)
 
@@ -340,3 +344,139 @@ class BigQuery:
         except GoogleCloudError as e:
             logger.error("Error checking table '%s': %s", table_id, e, exc_info=True)
             raise
+
+    def upsert_dataframe_by_keys(
+        self,
+        df: pd.DataFrame,
+        table_name: str,
+        dataset_id: str,
+        unique_keys: List[str],
+        schema: Optional[List[bigquery.SchemaField]] = None,
+    ) -> None:
+        """
+        Replace matching rows and insert new ones using server-side delete+insert.
+
+        Steps:
+        1. Load the incoming DataFrame into a temporary table in the same dataset.
+        2. Delete any target rows whose unique keys appear in the temp table (with
+           partition pruning for efficiency).
+        3. Insert all rows from the temp table into the target table.
+        4. Drop the temporary table.
+
+        This avoids client-side row-by-row operations and keeps the operation atomic at
+        the table level. Uses partition pruning when Datetime column exists to optimize
+        DELETE performance on partitioned tables.
+        """
+        if df.empty:
+            return
+
+        missing_keys = [key for key in unique_keys if key not in df.columns]
+        if missing_keys:
+            raise ValueError(
+                f"Unique key columns not found in DataFrame: {missing_keys}"
+            )
+
+        target_table_id = self._table_id(dataset_id, table_name)
+        temp_table_name = f"_tmp_{table_name}_{uuid4().hex}"
+        temp_table_id = self._table_id(dataset_id, temp_table_name)
+
+        # Use target table schema so types align (prevents TIMESTAMP/DATETIME mismatch)
+        if schema is None:
+            target_table = self.client.get_table(target_table_id)
+            schema = target_table.schema
+
+        # 1) Load DataFrame into a temporary table
+        load_config = bigquery.LoadJobConfig(
+            write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+            schema=schema,
+        )
+        load_job = self.client.load_table_from_dataframe(
+            df, temp_table_id, job_config=load_config
+        )
+        load_job.result()
+
+        try:
+            # 2) Delete matching rows from target
+            # Only check the same day partition(s) since we're adding daily data
+            # This makes the DELETE much more efficient on partitioned tables
+            datetime_col = None
+            for col in df.columns:
+                if col.lower() in ["datetime", "measured_at", "timestamp"]:
+                    datetime_col = col
+                    break
+
+            # Build WHERE clause with date partition filter for efficient pruning
+            where_conditions = []
+            if datetime_col and datetime_col in df.columns:
+                # Get unique dates from DataFrame to filter by partition
+                datetime_series = df[datetime_col]
+                if not datetime_series.empty and pd.notna(datetime_series).any():
+                    # Convert to datetime if needed and extract unique dates
+                    if not pd.api.types.is_datetime64_any_dtype(datetime_series):
+                        datetime_series = pd.to_datetime(datetime_series)
+
+                    # Extract unique dates (day-level) for partition pruning
+                    unique_dates = datetime_series.dt.date.unique()
+
+                    if len(unique_dates) == 1:
+                        # Single day: use DATE() function for partition pruning
+                        date_str = unique_dates[0].strftime("%Y-%m-%d")
+                        where_conditions.append(
+                            f"DATE(`{datetime_col}`) = DATE('{date_str}')"
+                        )
+                    else:
+                        # Multiple days: use IN clause with DATE() function
+                        date_list = ", ".join(
+                            [f"DATE('{d.strftime('%Y-%m-%d')}')" for d in unique_dates]
+                        )
+                        where_conditions.append(
+                            f"DATE(`{datetime_col}`) IN ({date_list})"
+                        )
+
+            # Build join conditions for matching unique keys
+            # Use EXISTS with explicit equality conditions to avoid LEFT SEMI JOIN issues
+            key_condition = None
+            if len(unique_keys) == 1:
+                # Single key: simple IN clause
+                key = unique_keys[0]
+                key_condition = (
+                    f"TARGET.`{key}` IN (SELECT `{key}` FROM `{temp_table_id}`)"
+                )
+            else:
+                # Multiple keys: use EXISTS with explicit join conditions
+                # Build equality conditions for each key matching target table to source
+                join_conditions = " AND ".join(
+                    [f"TARGET.`{key}` = SOURCE.`{key}`" for key in unique_keys]
+                )
+                key_condition = f"""EXISTS (
+                    SELECT 1 FROM `{temp_table_id}` AS SOURCE
+                    WHERE {join_conditions}
+                )"""
+
+            # Combine date filter with key condition
+            if key_condition:
+                where_conditions.append(key_condition)
+            where_clause = " AND ".join(where_conditions)
+
+            delete_sql = f"""
+            DELETE FROM `{target_table_id}` AS TARGET
+            WHERE {where_clause}
+            """
+            self.query(delete_sql)
+
+            # 3) Insert all rows from temp into target
+            columns = [f"`{col}`" for col in df.columns]
+            column_list = ", ".join(columns)
+            insert_sql = f"""
+            INSERT INTO `{target_table_id}` ({column_list})
+            SELECT {column_list} FROM `{temp_table_id}`
+            """
+            self.query(insert_sql)
+        finally:
+            # 4) Drop temp table regardless of success/failure to avoid table bloat
+            try:
+                self.client.delete_table(temp_table_id, not_found_ok=True)
+            except GoogleCloudError as cleanup_error:
+                logger.warning(
+                    "Failed to drop temp table '%s': %s", temp_table_id, cleanup_error
+                )

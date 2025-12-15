@@ -273,7 +273,7 @@ cd schema
 
 bq mk --table \
   --project_id=airux8-opti-logic \
-  --dataset_id=IsetanMitsukoshi \
+  --dataset_id=Clea \
   --description="AC control data scraped from Airux8 web interface" \
   --time_partitioning_field=Datetime \
   --time_partitioning_type=DAY \
@@ -300,7 +300,7 @@ cd schema
 bq mk --table \
   --project_id=airux8-opti-logic \
   --dataset_id=IsetanMitsukoshi \
-  --description="AC power meter data scraped from nodes" \
+  --description="AC power meter data scraped from Airux8 web interface" \
   --time_partitioning_field=datetime \
   --time_partitioning_type=DAY \
   --clustering_fields=Datetime,Mesh_ID \

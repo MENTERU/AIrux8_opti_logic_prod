@@ -101,6 +101,8 @@ class Alrux8Scraper:
                     "--ignore-certificate-errors",
                     "--disable-extensions",
                     "--disable-plugins",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-features=IsolateOrigins,site-per-process",
                 ],
             )
 
@@ -110,8 +112,21 @@ class Alrux8Scraper:
                     "width": 1920,
                     "height": 1080,
                 },  # Set viewport for headless mode
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                locale="ja-JP",
+                timezone_id="Asia/Tokyo",
+                permissions=["geolocation"],
             )
             self.page = await self.context.new_page()
+
+            # Remove webdriver property to avoid detection
+            await self.page.add_init_script(
+                """
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+            """
+            )
 
             logger.info("ブラウザセットアップ完了")
             return True
@@ -128,25 +143,129 @@ class Alrux8Scraper:
             await self.page.goto("https://www.airux8.com/login")
             await self.page.wait_for_load_state("networkidle")
 
+            # Wait for login form to be visible
+            await self.page.wait_for_selector(
+                "input[name='username']", state="visible", timeout=10000
+            )
+            await self.page.wait_for_selector(
+                "input[name='password']", state="visible", timeout=10000
+            )
+
             await self.page.fill("input[name='username']", username)
             await self.page.fill("input[name='password']", password)
             await self.page.wait_for_timeout(1000)
 
-            await self.page.click("button[type='submit']")
-            await self.page.wait_for_timeout(5000)
+            # Click submit and wait for navigation (with fallback if no navigation occurs)
+            logger.info("ログインボタンをクリック中...")
+            try:
+                async with self.page.expect_navigation(
+                    timeout=15000, wait_until="networkidle"
+                ) as navigation_info:
+                    await self.page.click("button[type='submit']")
+                logger.info("ページナビゲーションが検出されました")
+            except Exception as nav_error:
+                logger.warning(
+                    f"ナビゲーション待機がタイムアウトしました（続行します）: {nav_error}"
+                )
+                # Wait a bit for any JavaScript redirects
+                await self.page.wait_for_timeout(3000)
+
+            # Wait a bit more for any redirects or JavaScript updates
+            await self.page.wait_for_timeout(2000)
 
             current_url = self.page.url
             logger.info(f"ログイン後のURL: {current_url}")
 
-            if "login" not in current_url.lower():
+            # Check for error messages on the page
+            error_selectors = [
+                ".error",
+                ".alert-danger",
+                "[role='alert']",
+                ".message.error",
+                "div:has-text('error')",
+                "div:has-text('Error')",
+                "div:has-text('失敗')",
+                "div:has-text('Invalid')",
+                "div:has-text('incorrect')",
+            ]
+
+            error_found = False
+            for error_selector in error_selectors:
+                try:
+                    error_element = self.page.locator(error_selector).first
+                    if await error_element.is_visible(timeout=2000):
+                        error_text = await error_element.text_content()
+                        logger.error(
+                            f"ログインページにエラーメッセージが見つかりました: {error_text}"
+                        )
+                        error_found = True
+                        break
+                except Exception:
+                    continue
+
+            # Check if we're still on login page
+            if "login" in current_url.lower():
+                # Take screenshot for debugging
+                try:
+                    screenshot_path = (
+                        self.base_dir / "logs" / "error_A" / "login_failed.png"
+                    )
+                    screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+                    await self.page.screenshot(path=str(screenshot_path))
+                    logger.info(f"デバッグ用スクリーンショット保存: {screenshot_path}")
+                except Exception as screenshot_error:
+                    logger.warning(f"スクリーンショット保存失敗: {screenshot_error}")
+
+                # Get page content for debugging
+                try:
+                    page_content = await self.page.content()
+                    if (
+                        "error" in page_content.lower()
+                        or "invalid" in page_content.lower()
+                    ):
+                        logger.warning(
+                            "ページコンテンツにエラー関連のテキストが見つかりました"
+                        )
+                except Exception:
+                    pass
+
+                logger.error("ログイン失敗: ログインページに留まっています")
+                return False
+
+            # Check for successful login indicators
+            success_indicators = [
+                "/airux-admin",
+                "/dashboard",
+                "/home",
+            ]
+
+            login_successful = False
+            for indicator in success_indicators:
+                if indicator in current_url.lower():
+                    login_successful = True
+                    break
+
+            # Also check if we're not on login page
+            if not login_successful and "login" not in current_url.lower():
+                login_successful = True
+
+            if login_successful:
                 logger.info("ログイン成功")
                 return True
             else:
-                logger.error("ログイン失敗")
+                logger.error("ログイン失敗: 成功の指標が見つかりませんでした")
                 return False
 
         except Exception as e:
-            logger.error(f"ログインエラー: {e}")
+            logger.error(f"ログインエラー: {e}", exc_info=True)
+            # Take screenshot on error
+            try:
+                screenshot_path = self.base_dir / "logs" / "error_A" / "login_error.png"
+                screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+                await self.page.screenshot(path=str(screenshot_path))
+                logger.info(f"エラー時のスクリーンショット保存: {screenshot_path}")
+            except Exception as screenshot_error:
+                logger.warning(f"スクリーンショット保存失敗: {screenshot_error}")
             return False
 
     async def navigate_to_logs(self):
@@ -876,7 +995,9 @@ class Alrux8Scraper:
         return data_frame
 
     async def process_existing_files(self, store_name):
-        """既存のCSVファイルを処理してBigQueryにアップロード（スクレイピングなし）"""
+        """既存のCSVファイルを処理してBigQueryにアップロード（スクレイピングなし）
+        This method is meant to be used for processing existing files that were scraped manually.
+        """
         try:
             logger.info("既存ファイルの処理開始")
 
@@ -1032,12 +1153,29 @@ class Alrux8Scraper:
                                     f"BigQuery書き込み開始: {self.bq_dataset_id}.{table_name}, "
                                     f"行数: {len(transformed_df)}"
                                 )
-                                self.bq_client.write_dataframe(
-                                    transformed_df,
-                                    table_name=table_name,
-                                    dataset_id=self.bq_dataset_id,
-                                    if_exists="append",
-                                )
+
+                                # Delete existing rows with matching unique keys to prevent duplicates
+                                if file_data_type == "A/C制御":
+                                    unique_keys = ["AC_Name", "Datetime"]
+                                elif file_data_type == "A/C Power Meter":
+                                    unique_keys = ["Mesh_ID", "PM_Addr_ID", "Datetime"]
+                                else:
+                                    unique_keys = None
+
+                                if unique_keys:
+                                    self.bq_client.upsert_dataframe_by_keys(
+                                        transformed_df,
+                                        table_name=table_name,
+                                        dataset_id=self.bq_dataset_id,
+                                        unique_keys=unique_keys,
+                                    )
+                                else:
+                                    self.bq_client.write_dataframe(
+                                        transformed_df,
+                                        table_name=table_name,
+                                        dataset_id=self.bq_dataset_id,
+                                        if_exists="append",
+                                    )
                                 logger.info(
                                     f"BigQuery書き込み完了: {self.bq_dataset_id}.{table_name} "
                                     f"({len(transformed_df)} rows)"
@@ -1213,12 +1351,33 @@ class Alrux8Scraper:
                                             f"BigQuery書き込み開始: {self.bq_dataset_id}.{table_name}, "
                                             f"行数: {len(transformed_df)}"
                                         )
-                                        self.bq_client.write_dataframe(
-                                            transformed_df,
-                                            table_name=table_name,
-                                            dataset_id=self.bq_dataset_id,
-                                            if_exists="append",
-                                        )
+
+                                        # Delete existing rows with matching unique keys to prevent duplicates
+                                        if file_data_type == "A/C制御":
+                                            unique_keys = ["AC_Name", "Datetime"]
+                                        elif file_data_type == "A/C Power Meter":
+                                            unique_keys = [
+                                                "Mesh_ID",
+                                                "PM_Addr_ID",
+                                                "Datetime",
+                                            ]
+                                        else:
+                                            unique_keys = None
+
+                                        if unique_keys:
+                                            self.bq_client.upsert_dataframe_by_keys(
+                                                transformed_df,
+                                                table_name=table_name,
+                                                dataset_id=self.bq_dataset_id,
+                                                unique_keys=unique_keys,
+                                            )
+                                        else:
+                                            self.bq_client.write_dataframe(
+                                                transformed_df,
+                                                table_name=table_name,
+                                                dataset_id=self.bq_dataset_id,
+                                                if_exists="append",
+                                            )
                                         logger.info(
                                             f"BigQuery書き込み完了: {self.bq_dataset_id}.{table_name} "
                                             f"({len(transformed_df)} rows)"
@@ -1244,21 +1403,21 @@ class Alrux8Scraper:
                     else:
                         logger.warning(f"データタイプが見つかりません: {csv_file}")
                 # Delete downloads folder after all files are processed
-                try:
-                    if downloads_dir.exists():
-                        shutil.rmtree(str(downloads_dir))
-                        logger.info("downloadsフォルダを削除しました")
-                except Exception as cleanup_error:
-                    logger.warning(f"downloadsフォルダの削除エラー: {cleanup_error}")
+                # try:
+                #     if downloads_dir.exists():
+                #         shutil.rmtree(str(downloads_dir))
+                #         logger.info("downloadsフォルダを削除しました")
+                # except Exception as cleanup_error:
+                #     logger.warning(f"downloadsフォルダの削除エラー: {cleanup_error}")
 
-                # Delete alrux8_data folder after all files are uploaded to GCS
-                try:
-                    alrux8_data_dir = self.base_dir / "alrux8_data"
-                    if alrux8_data_dir.exists():
-                        shutil.rmtree(str(alrux8_data_dir))
-                        logger.info("alrux8_dataフォルダを削除しました")
-                except Exception as cleanup_error:
-                    logger.warning(f"alrux8_dataフォルダの削除エラー: {cleanup_error}")
+                # # Delete alrux8_data folder after all files are uploaded to GCS
+                # try:
+                #     alrux8_data_dir = self.base_dir / "alrux8_data"
+                #     if alrux8_data_dir.exists():
+                #         shutil.rmtree(str(alrux8_data_dir))
+                #         logger.info("alrux8_dataフォルダを削除しました")
+                # except Exception as cleanup_error:
+                #     logger.warning(f"alrux8_dataフォルダの削除エラー: {cleanup_error}")
 
             return True
 
