@@ -100,17 +100,18 @@ async def main():
         )
         print(f"データ: {', '.join(data_types)}")
 
-        # スクレイピング実行
-        # success = await scraper.run_scraping(
-        #     username=username,
-        #     password=password,
-        #     store_name=GCPEnv.STORE_NAME,
-        #     start_date=start_date,
-        #     end_date=end_date,
-        #     data_types=data_types,
-        # )
+        スクレイピング実行
+        success = await scraper.run_scraping(
+            username=username,
+            password=password,
+            store_name=GCPEnv.STORE_NAME,
+            start_date=start_date,
+            end_date=end_date,
+            data_types=data_types,
+        )
 
-        success = await scraper.process_existing_files(store_name=GCPEnv.STORE_NAME)
+        # 既存ファイルの処理
+        # success = await scraper.process_existing_files(store_name=GCPEnv.STORE_NAME)
 
         if success:
             print("=" * 60)
