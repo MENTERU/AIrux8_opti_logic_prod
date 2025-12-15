@@ -100,7 +100,7 @@ async def main():
         )
         print(f"データ: {', '.join(data_types)}")
 
-        スクレイピング実行
+        # スクレイピング実行
         success = await scraper.run_scraping(
             username=username,
             password=password,
