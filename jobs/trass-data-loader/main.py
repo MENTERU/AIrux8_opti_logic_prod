@@ -75,8 +75,22 @@ def compose_idu(df: pd.DataFrame) -> Optional[pd.DataFrame]:
     # Sort by time descending
     out_df = out_df.sort_values("measured_at", ascending=False)
 
-    # Convert "OFF" to 0 and "ON" (or anything else) to 1
-    out_df["ac_on_off"] = np.where(out_df["ac_on_off"] == "OFF", 0, 1)
+    # Mapping
+    out_df[["ac_on_off", "ac_mode", "ac_fan_speed"]] = out_df[
+        ["ac_on_off", "ac_mode", "ac_fan_speed"]
+    ].apply(lambda s: s.str.upper())
+
+    out_df["ac_on_off"] = out_df["ac_on_off"].map({"OFF": 0, "ON": 1}).astype("Int64")
+    out_df["ac_mode"] = (
+        out_df["ac_mode"]
+        .map({"OFF": 0, "COOL": 1, "HEAT": 2, "FAN": 3})
+        .astype("Int64")
+    )
+    out_df["ac_fan_speed"] = (
+        out_df["ac_fan_speed"]
+        .map({"AUTO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "TOP": 4})
+        .astype("Int64")
+    )
 
     logger.info("IDU composition (cleaning/transforming) complete.")
     return out_df
