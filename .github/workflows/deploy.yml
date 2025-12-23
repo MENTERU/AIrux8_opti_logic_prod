@@ -202,7 +202,7 @@ jobs:
                 echo "Updating existing scheduler job..."
                 gcloud scheduler jobs update http job-$dir_lower-scheduler \
                   --location="${{ vars.REGION }}" \
-                  --schedule="0 5 * * *" \
+                  --schedule="30 0 * * *" \
                   --time-zone="Asia/Tokyo" \
                   --uri="https://${{ vars.REGION }}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${{ vars.PROJECT_ID }}/jobs/$JOB_NAME:run" \
                   --http-method="POST" \
@@ -217,7 +217,7 @@ jobs:
                 echo "Creating new scheduler job..."
                 gcloud scheduler jobs create http job-$dir_lower-scheduler \
                   --location="${{ vars.REGION }}" \
-                  --schedule="0 5 * * *" \
+                  --schedule="30 0 * * *" \
                   --time-zone="Asia/Tokyo" \
                   --uri="https://${{ vars.REGION }}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${{ vars.PROJECT_ID }}/jobs/$JOB_NAME:run" \
                   --http-method="POST" \
