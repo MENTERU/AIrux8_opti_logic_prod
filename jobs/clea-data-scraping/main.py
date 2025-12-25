@@ -3,7 +3,6 @@
 Cloud Run Job entrypoint - runs scraping directly
 """
 import asyncio
-import os
 import sys
 from datetime import datetime, timedelta
 

@@ -4,14 +4,13 @@ Alrux8データ取得スクレイパー（Playwright版）
 本番用の整理されたバージョン
 """
 
-import asyncio
 import logging
 import os
 import shutil
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+import pytz
 from config.config_gcp import GCPEnv
 from playwright.async_api import async_playwright
 from service.bigquery import BigQuery
@@ -160,7 +159,7 @@ class Alrux8Scraper:
             try:
                 async with self.page.expect_navigation(
                     timeout=15000, wait_until="networkidle"
-                ) as navigation_info:
+                ) as _:
                     await self.page.click("button[type='submit']")
                 logger.info("ページナビゲーションが検出されました")
             except Exception as nav_error:
@@ -189,7 +188,6 @@ class Alrux8Scraper:
                 "div:has-text('incorrect')",
             ]
 
-            error_found = False
             for error_selector in error_selectors:
                 try:
                     error_element = self.page.locator(error_selector).first
@@ -198,7 +196,6 @@ class Alrux8Scraper:
                         logger.error(
                             f"ログインページにエラーメッセージが見つかりました: {error_text}"
                         )
-                        error_found = True
                         break
                 except Exception:
                     continue
@@ -691,7 +688,7 @@ class Alrux8Scraper:
                             )
                             break
                         else:
-                            logger.warning(f"候補は正しいボタンではありませんでした")
+                            logger.warning("候補は正しいボタンではありませんでした")
 
                     except Exception as selector_error:
                         logger.debug(
@@ -773,7 +770,7 @@ class Alrux8Scraper:
                         )
 
                     # Don't reload page - just wait longer as AC selections would be lost
-                    logger.info(f"待機後に再試行します（ページリロードなし）...")
+                    logger.info("待機後に再試行します（ページリロードなし）...")
                     await self.page.wait_for_timeout(5000)
                 else:
                     logger.error(f"最大リトライ回数に達しました: {data_type}")
@@ -897,34 +894,23 @@ class Alrux8Scraper:
                 f"Datetime変換前の範囲 (JST): {min_datetime_str} ～ {max_datetime_str}"
             )
 
-            # Parse datetime (may be timezone-aware)
+            # Parse datetime (may be timezone-aware or naive)
             data_frame["Datetime"] = pd.to_datetime(
                 data_frame["Datetime"], errors="coerce"
             )
 
-            # Convert to naive datetime (remove timezone but keep time values as-is)
-            # This preserves the original time (e.g., 23:55 stays as 23:55, not converted to 14:55 UTC)
-            if data_frame["Datetime"].dt.tz is not None:
-                # If timezone-aware, extract naive components to preserve time values
-                # This keeps the time values unchanged (23:55 JST becomes 23:55 naive)
-                # We use apply to extract components and rebuild as naive datetime
-                def to_naive(dt):
-                    if pd.isna(dt) or dt.tz is None:
-                        return dt
-                    # Extract components and create naive datetime
-                    return pd.Timestamp(
-                        year=dt.year,
-                        month=dt.month,
-                        day=dt.day,
-                        hour=dt.hour,
-                        minute=dt.minute,
-                        second=dt.second,
-                        microsecond=dt.microsecond,
-                    )
-
-                data_frame["Datetime"] = data_frame["Datetime"].apply(to_naive)
+            # Ensure timestamps are timezone-aware (JST) so BigQuery can convert to UTC
+            # If naive, assume JST and localize; if already timezone-aware, keep as is
+            jst = pytz.timezone("Asia/Tokyo")
+            if data_frame["Datetime"].dt.tz is None:
+                # If naive, localize to JST
+                data_frame["Datetime"] = data_frame["Datetime"].dt.tz_localize(jst)
                 logger.info(
-                    "タイムゾーン情報を削除し、時刻値をそのまま保持しました (naive datetime)"
+                    "Naive datetimeをJSTにローカライズしました (BigQueryが自動的にUTCに変換します)"
+                )
+            else:
+                logger.info(
+                    "Timezone-aware datetimeを保持しました (BigQueryが自動的にUTCに変換します)"
                 )
 
             # Check for parsing errors
@@ -953,14 +939,21 @@ class Alrux8Scraper:
                     f"({original_datetime_count} → {len(data_frame)})"
                 )
 
-            # Log final datetime range (naive, no timezone)
+            # Log final datetime range (timezone-aware, will be converted to UTC by BigQuery)
             if len(data_frame) > 0:
                 valid_datetimes = data_frame["Datetime"].dropna()
                 if len(valid_datetimes) > 0:
                     min_dt = valid_datetimes.min()
                     max_dt = valid_datetimes.max()
+                    # Get timezone info safely
+                    first_dt = valid_datetimes.iloc[0]
+                    timezone_info = (
+                        f" ({first_dt.tz})"
+                        if hasattr(first_dt, "tz") and first_dt.tz is not None
+                        else ""
+                    )
                     logger.info(
-                        f"最終Datetime範囲 (naive, タイムゾーンなし): {min_dt} ～ {max_dt} "
+                        f"最終Datetime範囲 (timezone-aware{timezone_info}, BigQueryがUTCに変換): {min_dt} ～ {max_dt} "
                         f"(合計 {len(valid_datetimes)} 行)"
                     )
 
@@ -1064,7 +1057,7 @@ class Alrux8Scraper:
                         mesh_id_column = "Mesh ID"
                         pm_addr_column = "PM Addr ID"
                         logger.info(
-                            f"AC Power Meter フィルタリング: "
+                            "AC Power Meter フィルタリング: "
                             f"カラム存在確認 - Mesh ID: {mesh_id_column in df.columns}, "
                             f"PM Addr ID: {pm_addr_column in df.columns}, "
                             f"全カラム: {list(df.columns)}"
@@ -1084,8 +1077,8 @@ class Alrux8Scraper:
                                 )
                         else:
                             logger.warning(
-                                f"AC Power Meter フィルタリング: "
-                                f"必要なカラムが見つかりません。フィルタリングをスキップします。"
+                                "AC Power Meter フィルタリング: "
+                                "必要なカラムが見つかりません。フィルタリングをスキップします。"
                             )
 
                     # Skip if dataframe is empty after filtering
@@ -1123,14 +1116,22 @@ class Alrux8Scraper:
                             df, file_data_type
                         )
 
-                        # Log transformed datetime range (naive, no timezone conversion)
+                        # Log transformed datetime range (timezone-aware, will be converted to UTC by BigQuery)
                         if "Datetime" in transformed_df.columns:
                             valid_datetimes = transformed_df["Datetime"].dropna()
                             if len(valid_datetimes) > 0:
-                                min_datetime_naive = valid_datetimes.min()
-                                max_datetime_naive = valid_datetimes.max()
+                                min_datetime = valid_datetimes.min()
+                                max_datetime = valid_datetimes.max()
+                                # Get timezone info safely
+                                first_dt = valid_datetimes.iloc[0]
+                                timezone_info = (
+                                    f" ({first_dt.tz})"
+                                    if hasattr(first_dt, "tz")
+                                    and first_dt.tz is not None
+                                    else ""
+                                )
                                 logger.info(
-                                    f"変換後Datetime範囲 (naive, タイムゾーンなし): {min_datetime_naive} ～ {max_datetime_naive}"
+                                    f"変換後Datetime範囲 (timezone-aware{timezone_info}, BigQueryがUTCに変換): {min_datetime} ～ {max_datetime}"
                                 )
                             else:
                                 logger.warning("変換後、有効なDatetimeがありません")
@@ -1234,7 +1235,7 @@ class Alrux8Scraper:
                             files_by_data_type[data_type] = []
                         files_by_data_type[data_type].append(file_info)
 
-                # Move files and upload to GCS
+                # Move files and upload
                 for csv_file in csv_files:
                     source_path = downloads_dir / csv_file
                     dest_path = store_folder / csv_file
@@ -1252,8 +1253,8 @@ class Alrux8Scraper:
 
                     # Upload to GCS
                     if file_data_type:
-                        gcs_path = self._get_gcs_path_for_data_type(file_data_type)
-                        gcs_file_path = f"{gcs_path}{csv_file}"
+                        # gcs_path = self._get_gcs_path_for_data_type(file_data_type)
+                        # gcs_file_path = f"{gcs_path}{csv_file}"
 
                         try:
                             df = pd.read_csv(dest_path, low_memory=False)
@@ -1307,8 +1308,8 @@ class Alrux8Scraper:
                                         )
                                 else:
                                     logger.warning(
-                                        f"AC Power Meter フィルタリング: "
-                                        f"必要なカラムが見つかりません。フィルタリングをスキップします。"
+                                        "AC Power Meter フィルタリング: "
+                                        "必要なカラムが見つかりません。フィルタリングをスキップします。"
                                     )
 
                             # Skip upload if dataframe is empty after filtering
@@ -1319,8 +1320,8 @@ class Alrux8Scraper:
                                 continue
 
                             # GCS upload
-                            self.gcs_client.write_csv(df, gcs_file_path)
-                            logger.info(f"GCSアップロード完了: {gcs_file_path}")
+                            # self.gcs_client.write_csv(df, gcs_file_path)
+                            # logger.info(f"GCSアップロード完了: {gcs_file_path}")
 
                             # BigQuery ingest (append to raw tables)
                             try:
