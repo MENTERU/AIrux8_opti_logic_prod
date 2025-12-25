@@ -5,12 +5,10 @@ Centralized service for managing GCP Secret Manager operations.
 """
 
 import json
-import os
 from typing import Dict, Optional
 
-from google.cloud import secretmanager
-
 from config.config_gcp import GCPEnv
+from google.cloud import secretmanager
 
 
 class SecretManagerClient:
