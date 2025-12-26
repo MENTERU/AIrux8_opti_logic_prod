@@ -69,9 +69,7 @@ def compose_idu(df: pd.DataFrame) -> Optional[pd.DataFrame]:
         ]
     ]
 
-    out_df["measured_at"] = (
-        pd.to_datetime(out_df["measured_at"]).dt.floor("s").dt.tz_localize(None)
-    )
+    out_df["measured_at"] = pd.to_datetime(out_df["measured_at"]).dt.floor("s")
     # Sort by time descending
     out_df = out_df.sort_values("measured_at", ascending=False)
 
@@ -128,9 +126,7 @@ def compose_odu(df: pd.DataFrame) -> Optional[pd.DataFrame]:
 
     out_df = out_df[["measured_at", "odu_id", "total_kwh"]]
 
-    out_df["measured_at"] = (
-        pd.to_datetime(out_df["measured_at"]).dt.floor("s").dt.tz_localize(None)
-    )
+    out_df["measured_at"] = pd.to_datetime(out_df["measured_at"]).dt.floor("s")
 
     # Sort by time descending
     out_df = out_df.sort_values("measured_at", ascending=False)
