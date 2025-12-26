@@ -231,9 +231,10 @@ def main():
                 try:
                     # 1. Load Raw Data
                     query = f"""
-                        SELECT * FROM `{GCPEnv.PROJECT_ID}.{store_name}.table_name` 
+                        SELECT DATETIME(Datetime, "Asia/Tokyo") AS Datetime, * EXCEPT (Datetime) 
+                        FROM `{GCPEnv.PROJECT_ID}.{store_name}.table_name` 
                         WHERE TIMESTAMP_TRUNC(Datetime, SECOND) >= TIMESTAMP('{start_date}') 
-                        and TIMESTAMP_TRUNC(Datetime, SECOND) <= TIMESTAMP('{end_date}')
+                        AND TIMESTAMP_TRUNC(Datetime, SECOND) <= TIMESTAMP('{end_date}')
                     """
 
                     idu_raw = bigquery_client.query(
