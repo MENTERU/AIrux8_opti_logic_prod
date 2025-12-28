@@ -3,7 +3,7 @@ import os
 from typing import List, Optional, Tuple
 
 import pandas as pd
-
+from pyparsing import col
 from config.utils import get_data_path, get_weather_historical_path
 from processing.utilities.category_mapping_loader import (
     get_default_category_value,
@@ -37,10 +37,15 @@ class DataPreprocessor:
 
     # 共通
     @staticmethod
-    def _unify_datetime(
-        df: pd.DataFrame,
-    ) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
-        cols = [c for c in df.columns if "datetime" in c.lower() or "日時" in c]
+    def _unify_datetime(df: pd.DataFrame):
+        # exact matches first
+        for exact in ["Datetime", "datetime", "日時"]:
+            if exact in df.columns:
+                col = exact
+                break
+        else:
+            # fuzzy search as fallback
+            cols = [c for c in df.columns if "datetime" in c.lower()]
         if not cols:
             return None, None
         col = cols[0]

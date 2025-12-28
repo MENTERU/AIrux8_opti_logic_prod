@@ -175,11 +175,19 @@ class MasterDataLoader:
 
             # Initialize zone structures
             for zone_name in zones:
-                if pd.isna(zone_name):
+                zone_name = str(zone_name).strip()
+
+                if zone_name in ("Area 2", "エリア2"):
                     continue
+
                 master_data["zones"][zone_name] = {"outdoor_units": {}}
                 print(f"[MasterDataLoader] Initialized zone: {zone_name}")
-
+            # create Area2 subzones
+            for z in ("Area2_1", "Area2_2"):
+                if z not in master_data["zones"]:
+                    master_data["zones"][z] = {"outdoor_units": {}}
+                    print(f"[MasterDataLoader] Explicitly initialized zone: {z}")
+                    
             # Process equipment mapping from MASTER sheet
             print(f"[MasterDataLoader] Processing equipment mapping from MASTER sheet")
             for _, row in master_df.iterrows():
@@ -189,7 +197,22 @@ class MasterDataLoader:
 
                 if pd.isna(zone_name) or pd.isna(outdoor_unit) or pd.isna(indoor_unit):
                     continue
+                zone_name = str(zone_name).strip()
 
+                # Area 2 split mapping
+                if zone_name in ("Area 2", "エリア2"):
+                    indoor_unit_str = str(indoor_unit)
+
+                    # Area2_1 Indoor Units
+                    if indoor_unit_str in ("D-8北2", "D-6北1", "D-7南2", "D-5南1"):
+                        zone_name = "Area2_1"
+
+                    # Area2_2 Indoor Units
+                    elif indoor_unit_str in ("D-4北2", "D-2北1"):
+                        zone_name = "Area2_2"
+
+                    else:
+                        continue
                 # Clean up outdoor unit ID
                 outdoor_unit = str(outdoor_unit).rstrip(",").strip()
 
@@ -249,71 +272,63 @@ class MasterDataLoader:
                 )
                 for _, row in current_month_data.iterrows():
                     zone_name = row["制御区分"]
+                    if pd.isna(zone_name):
+                        continue
+                    zone_name = str(zone_name).strip()
 
-                    if zone_name in master_data["zones"]:
-                        # Extract current month settings
-                        master_data["zones"][zone_name].update(
-                            {
-                                "start_time": (
-                                    str(row["始業時間"]).split()[0]
-                                    if pd.notna(row["始業時間"])
-                                    else "07:00"
-                                ),
-                                "end_time": (
-                                    str(row["就業時間"]).split()[0]
-                                    if pd.notna(row["就業時間"])
-                                    else "20:00"
-                                ),
-                                "comfort_min": (
-                                    float(row["目標室内温度下限"])
-                                    if pd.notna(row["目標室内温度下限"])
-                                    else 22.0
-                                ),
-                                "comfort_max": (
-                                    float(row["目標室内温度上限"])
-                                    if pd.notna(row["目標室内温度上限"])
-                                    else 25.0
-                                ),
-                                "setpoint_min": (
-                                    float(row["設定温度下限"])
-                                    if pd.notna(row["設定温度下限"])
-                                    else 22.0
-                                ),
-                                "setpoint_max": (
-                                    float(row["設定温度上限"])
-                                    if pd.notna(row["設定温度上限"])
-                                    else 28.0
-                                ),
-                                "fan_candidates": (
-                                    str(row["風量候補"]).split(",")
-                                    if pd.notna(row["風量候補"])
-                                    else ["Low"]
-                                ),
-                                "mode_candidates": [
-                                    "COOL",
-                                    "HEAT",
-                                    "FAN",
-                                ],  # Default values
-                                "target_room_temp": (
-                                    (
+                    if zone_name in ("Area 2", "エリア2"):
+                        target_zones = ["Area2_1", "Area2_2"]
+                    else:
+                        target_zones = [zone_name]
+
+                    for tz in target_zones:
+                        if tz in master_data["zones"]:
+                            master_data["zones"][tz].update(
+                                {
+                                    "start_time": (
+                                        str(row["始業時間"]).split()[0]
+                                        if pd.notna(row["始業時間"])
+                                        else "07:00"
+                                    ),
+                                    "end_time": (
+                                        str(row["就業時間"]).split()[0]
+                                        if pd.notna(row["就業時間"])
+                                        else "20:00"
+                                    ),
+                                    "comfort_min": (
                                         float(row["目標室内温度下限"])
-                                        + float(row["目標室内温度上限"])
-                                    )
-                                    / 2
-                                    if pd.notna(row["目標室内温度下限"])
-                                    and pd.notna(row["目標室内温度上限"])
-                                    else 25.0
-                                ),
-                            }
-                        )
-                        print(
-                            f"[MasterDataLoader] Added current month settings for {zone_name}"
-                        )
-
-            print(
-                f"[MasterDataLoader] Master data built successfully for current month ({current_month_japanese})"
-            )
-            print(f"[MasterDataLoader] Zones: {list(master_data['zones'].keys())}")
+                                        if pd.notna(row["目標室内温度下限"])
+                                        else 22.0
+                                    ),
+                                    "comfort_max": (
+                                        float(row["目標室内温度上限"])
+                                        if pd.notna(row["目標室内温度上限"])
+                                        else 25.0
+                                    ),
+                                    "setpoint_min": (
+                                        float(row["設定温度下限"])
+                                        if pd.notna(row["設定温度下限"])
+                                        else 22.0
+                                    ),
+                                    "setpoint_max": (
+                                        float(row["設定温度上限"])
+                                        if pd.notna(row["設定温度上限"])
+                                        else 28.0
+                                    ),
+                                    "fan_candidates": (
+                                        str(row["風量候補"]).split(",")
+                                        if pd.notna(row["風量候補"])
+                                        else ["Low"]
+                                    ),
+                                    "mode_candidates": ["COOL", "HEAT", "FAN"],
+                                    "target_room_temp": (
+                                        (float(row["目標室内温度下限"]) + float(row["目標室内温度上限"])) / 2
+                                        if pd.notna(row["目標室内温度下限"]) and pd.notna(row["目標室内温度上限"])
+                                        else 25.0
+                                    ),
+                                }
+                            )
+                            print(f"master_data_loader: Added current month settings for {tz}")
 
             # Print summary
             for zone_name, zone_data in master_data["zones"].items():

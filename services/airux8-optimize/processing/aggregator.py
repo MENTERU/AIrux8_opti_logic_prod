@@ -1,6 +1,6 @@
 import os
 from typing import Dict, List, Optional
-
+import unicodedata
 import numpy as np
 import pandas as pd
 
@@ -20,7 +20,28 @@ class AreaAggregator:
 
     def __init__(self, master_info: dict):
         self.m = master_info
+        # Normalize Area2 unit mapping 
+        self.AREA2_UNIT_MAPPING = {
+            area: [self._normalize_ac_name(x) for x in units]
+            for area, units in self.AREA2_UNIT_MAPPING_RAW.items()
+        }
 
+    @staticmethod
+    def _normalize_ac_name(s):
+        """Normalizing the ac names and creating the mapping for Area2"""
+        if pd.isna(s):
+            return s
+        s = str(s)
+        s = unicodedata.normalize("NFKC", s)
+        s = s.replace(" ", "").replace("\u3000", "")
+        s = s.replace("–", "-").replace("—", "-").replace("−", "-").replace("ー", "-")
+        return s
+    
+    AREA2_UNIT_MAPPING_RAW = {
+        "Area2_1": ["D-8北2", "D-6北1", "D-7南2", "D-5南1"],
+        "Area2_2": ["D-4北2", "D-2北1"],
+    }
+    
     @staticmethod
     def _most_frequent(s: pd.Series):
         return s.mode().iloc[0] if not s.mode().empty else np.nan
@@ -35,7 +56,15 @@ class AreaAggregator:
     ) -> pd.DataFrame:
         if self.m is None or "zones" not in self.m:
             raise ValueError("マスタに zones がありません")
-        zones = self.m["zones"]
+        zones = self.m["zones"].copy()
+
+        # Extracting Area 2 of the other zones/rooms
+        # splitting Area 2 into Area2_1 and Area2_2 as independent zones
+        if "Area 2" in zones:
+            base_area2 = zones.pop("Area 2")
+
+            zones["Area2_1"] = base_area2
+            zones["Area2_2"] = base_area2
 
         # 天候（共通）
         weather = weather.copy() if weather is not None else pd.DataFrame()
@@ -94,7 +123,22 @@ class AreaAggregator:
 
             # 空調（室内機）: 1時間ごと 最頻値/平均
             if ac is not None and not ac.empty and indoor_units:
+                # converting into strings and normalizing 
+                ac["A/C Name"] = ac["A/C Name"].astype(str).apply(self._normalize_ac_name)
+                indoor_units = [self._normalize_ac_name(x) for x in indoor_units]
+                
                 ac_sub = ac[ac["A/C Name"].isin(indoor_units)].copy()
+                
+                # setting zone only if AC belongs to this sub area
+                if zone_name in ("Area2_1", "Area2_2"):
+                    allowed_units = self.AREA2_UNIT_MAPPING.get(zone_name, [])
+
+                    ac_sub = ac_sub[ac_sub["A/C Name"].isin(allowed_units)].copy()
+                    ac_sub["zone"] = zone_name
+
+                if zone_name not in ("Area2_1", "Area2_2"):
+                    ac_sub["zone"] = zone_name
+                    
                 if not ac_sub.empty:
                     # エリア別カテゴリカル変数マッピングを適用
                     if apply_zone_mapping:
@@ -126,8 +170,11 @@ class AreaAggregator:
                         )
 
                     # 1) Normalize to per-unit-per-hour first so each unit contributes at most 0/1 per hour
+                    # Every unit gets normalized per hour and per zone
+                    group_cols = ["Datetime", "A/C Name", "zone"]
+                    
                     unit_hour = (
-                        ac_sub.groupby(["Datetime", "A/C Name"])
+                        ac_sub.groupby([group_cols])
                         .agg(
                             {
                                 "A/C Set Temperature": AreaAggregator._most_frequent,
@@ -142,20 +189,37 @@ class AreaAggregator:
                     )
 
                     # 2) Aggregate to zone per hour
+                    # Because multiple zones are possible, one row per hour per zone
+                    # instead of just one row per hour
+                    # the mode is handled sparately 
+                    group_cols = ["Datetime", "zone"]
                     g = (
-                        unit_hour.groupby("Datetime")
+                        unit_hour.groupby(group_cols)
                         .agg(
                             {
                                 "A/C Set Temperature": AreaAggregator._most_frequent,
                                 "Indoor Temp.": "mean",
                                 # Sum across units now equals number of units ON (bounded by physical units)
                                 "A/C ON/OFF": "sum",
-                                "A/C Mode": AreaAggregator._most_frequent,
                                 "A/C Fan Speed": AreaAggregator._most_frequent,
                             }
                         )
                         .reset_index()
                     )
+                    
+                    # set zone column
+                    if zone_name not in ("Area2_1", "Area2_2"):
+                        g["zone"] = zone_name
+
+
+                    # add A/C Mode as metadata
+                    if "A/C Mode" in unit_hour.columns:
+                        g = g.merge(
+                            unit_hour[group_cols + ["A/C Mode"]]
+                            .drop_duplicates(subset=group_cols),
+                            on=group_cols,
+                            how="left"
+                        )
 
                     # Debug: verify counts are reasonable after normalization
                     if not g.empty:
@@ -170,42 +234,54 @@ class AreaAggregator:
 
                     # Create A/C Status column based on ON/OFF count and Mode
                     # Status mapping: OFF=0, COOL=1, HEAT=2, FAN=3
+                    g["A/C Status"] = 0
+
                     if "A/C ON/OFF" in g.columns and "A/C Mode" in g.columns:
-                        g["A/C Status"] = 0  # Default to OFF
-                        # If any units are ON, use the mode value
+                        # if not numeric already, for safety 
+                        g["A/C Mode"] = pd.to_numeric(g["A/C Mode"], errors="coerce")
+
+                        # assigning status when at least one unit is ON
                         on_mask = g["A/C ON/OFF"] > 0
-                        g.loc[on_mask, "A/C Status"] = g.loc[
-                            on_mask, "A/C Mode"
-                        ].astype(int)
-                        # Convert to integer type (not float)
-                        g["A/C Status"] = g["A/C Status"].fillna(0).astype(int)
-                        print(
-                            f"[AreaAggregator] Zone {zone_name}: Created A/C Status column"
-                        )
-                else:
-                    g = pd.DataFrame(
-                        columns=[
-                            "Datetime",
-                            "A/C Set Temperature",
-                            "Indoor Temp.",
-                            "A/C ON/OFF",
-                            "A/C Mode",
-                            "A/C Fan Speed",
-                            "A/C Status",
-                        ]
-                    )
-            else:
-                g = pd.DataFrame(
-                    columns=[
-                        "Datetime",
-                        "A/C Set Temperature",
-                        "Indoor Temp.",
-                        "A/C ON/OFF",
-                        "A/C Mode",
-                        "A/C Fan Speed",
-                        "A/C Status",
-                    ]
-                )
+                        
+                        g.loc[on_mask & (g["A/C Mode"] == 1), "A/C Status"] = 1
+                        g.loc[on_mask & (g["A/C Mode"] == 2), "A/C Status"] = 2
+                        # fan as fallback
+                        g.loc[
+                            on_mask & ~g["A/C Mode"].isin([1, 2]),
+                            "A/C Status"
+                        ] = 3
+                        g["Operation Status"] = g["A/C Status"]
+                    
+                    else:
+                        # even without ac data, zone should not disappear
+                        if ac is not None and not ac.empty and "Datetime" in ac.columns:
+                            base_dt = (
+                                pd.to_datetime(ac["Datetime"])
+                                .dt.floor(freq.replace("H", "h"))
+                                .unique()
+                            )
+                        # if power data exists, still show timestamps
+                        elif pm is not None and not pm.empty and "Datetime" in pm.columns:
+                            base_dt = (
+                                pd.to_datetime(pm["Datetime"])
+                                .dt.floor(freq.replace("H", "h"))
+                                .unique()
+                            )
+                        else:
+                            base_dt = []
+                        
+                        # create g
+                        g = pd.DataFrame({"Datetime": base_dt})
+                        
+                        # set default values
+                        g["A/C Set Temperature"] = np.nan
+                        g["Indoor Temp."] = np.nan
+                        g["A/C ON/OFF"] = 0
+                        g["A/C Mode"] = 0
+                        g["A/C Fan Speed"] = 0
+                        g["A/C Status"] = 0
+                        # mirror oper. status and ac status
+                        g["Operation Status"] = g["A/C Status"]
 
             # 電力（室外機×負荷率の合計）
             p_list = []
@@ -278,7 +354,8 @@ class AreaAggregator:
                 print(f"[AreaAggregator] 電力データがありません")
 
             # マージ
-            df = g.merge(p, on="Datetime", how="outer")
+            # left join to prevent artificial timestamps 
+            df = g.merge(p, on="Datetime", how="left")
 
             print(f"[AreaAggregator] マージ後:")
             print(f"  dfレコード数: {len(df)}")
@@ -427,6 +504,22 @@ class AreaAggregator:
             area_df = area_df[["Datetime", "Date"] + cols]
 
             # Final sort: zone 昇順 → Datetime 降順（各ゾーン内で新しい順）
+            # explicit zone order, so area 2_1 and 2_2 are in the right place
+            ZONE_ORDER = [
+                "Area 1",
+                "Area2_1",
+                "Area2_2",
+                "Area 3",
+                "Area 4",
+                "Meeting Room",
+                "Break Room",
+            ]
+
+            area_df["zone"] = pd.Categorical(
+                area_df["zone"],
+                categories=ZONE_ORDER,
+                ordered=True
+            )
             area_df.sort_values(
                 ["zone", "Datetime"], ascending=[True, False], inplace=True
             )
@@ -638,6 +731,7 @@ def aggregation_runner(
     aggregator_data = {
         "store_name": store_master_file.get("store_info", {}).get("name", store_name),
         "zones": store_master_file.get("zones", {}),
+        "master_original": store_master_file.get("sheets", {}).get("original"),
     }
     aggregator = AreaAggregator(aggregator_data)
     area_df = aggregator.build(

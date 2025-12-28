@@ -36,7 +36,17 @@ class Optimizer:
 
     Both modes filter for AC ON status only and support optional forecast hour range filtering.
     """
-
+    # making sure the zone order for the wide format is correct
+    ZONE_ORDER = [
+        "Area 1",
+        "Area2_1",
+        "Area2_2",
+        "Area 3",
+        "Area 4",
+        "Meeting Room",
+        "Break Room",
+    ]
+    
     def __init__(
         self,
         use_operating_hours: bool = False,
@@ -1183,8 +1193,18 @@ class Optimizer:
                 stats["success"] += 1
 
                 # Extract recommended settings from the pattern
-                units_count = best_pattern["A/C ON/OFF"]
-                
+                # prevent physically impossible unit counts
+                # getting number of indoor units from master
+                zone_info = master_data["zones"].get(zone, {})
+                max_units = sum(
+                    len(ou.get("indoor_units", []))
+                    for ou in zone_info.get("outdoor_units", {}).values()
+                )
+
+                units_count = min(
+                    int(best_pattern.get("A/C ON/OFF", 0)),
+                    max_units
+                )                
                 # Handle NaN values before converting to int
                 ac_mode_value = best_pattern["A/C Mode"]
                 if pd.isna(ac_mode_value):
@@ -1297,10 +1317,23 @@ class Optimizer:
         """
         # Load historical patterns
         historical_df = self.load_historical_patterns(features_csv_path)
-
+        
+        # 12 month filter
+        forecast_df["datetime"] = pd.to_datetime(forecast_df["datetime"])
+        historical_df["Datetime"] = pd.to_datetime(historical_df["Datetime"])
+        forecast_max_date = forecast_df["datetime"].max()
+        twelve_months_ago = forecast_max_date - pd.DateOffset(months=12)
+        historical_df = historical_df[
+            ~(
+                (historical_df["zone"].astype(str).str.strip().str.lower() == "area 1")
+                &
+                (historical_df["Datetime"] < twelve_months_ago)
+            )
+        ].copy()
+        
         # Get list of all zones from historical data
         zones = sorted(historical_df["zone"].unique())
-
+        zones = [z for z in self.ZONE_ORDER if z in historical_df["zone"].unique()]
         all_results = []
 
         # Optimize each zone
@@ -1410,8 +1443,11 @@ class Optimizer:
         base_df = base_df.sort_values("datetime").reset_index(drop=True)
 
         # Get unique zones
-        zones = sorted(long_df["zone"].unique())
-
+        zones = [
+            z for z in self.ZONE_ORDER
+            if z in long_df["zone"].unique()
+        ]
+        
         # Create zone-specific columns for each AC setting
         ac_settings = [
             "set_temp",
