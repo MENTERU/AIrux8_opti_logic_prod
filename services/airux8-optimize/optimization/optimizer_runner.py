@@ -429,6 +429,29 @@ class OptimizerRunner:
             f"[OptimizerRunner] Zone-level optimization results saved to: {output_logical_path}"
         )
 
+        # Also save long format results
+        try:
+            long_result_df = self.optimizer.get_long_format(self.results["optimization_result"])
+            if not long_result_df.empty:
+                # Generate long format filename
+                start_date_formatted = start_date.replace("-", "")
+                end_date_formatted = end_date.replace("-", "")
+                long_filename = f"zone_schedule_long_{start_date_formatted}_{end_date_formatted}.csv"
+                long_output_logical_path = f"04_PlanningData/{self.store_name}/{long_filename}"
+
+                print(
+                    f"[OptimizerRunner] Saving long format optimization results to storage path: {long_output_logical_path}"
+                )
+                storage.write_csv(long_result_df, long_output_logical_path)
+                print(
+                    f"[OptimizerRunner] Long format optimization results saved to: {long_output_logical_path}"
+                )
+        except Exception as error:
+            print(
+                f"[OptimizerRunner] Warning: Failed to save long format results: {error}"
+            )
+            # Don't raise - wide format results are already saved
+
         # Also save unit-level results if available
         if "optimization_result_units" in self.results:
             # Generate unit-level filename

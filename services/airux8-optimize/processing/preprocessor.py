@@ -3,7 +3,6 @@ import os
 from typing import List, Optional, Tuple
 
 import pandas as pd
-from pyparsing import col
 from config.utils import get_data_path, get_weather_historical_path
 from processing.utilities.category_mapping_loader import (
     get_default_category_value,
@@ -14,6 +13,7 @@ from processing.utilities.temp_range_export import (
     update_master_from_analysis,
 )
 from processing.utilities.weatherapi_client import VisualCrossingWeatherAPIDataFetcher
+from pyparsing import col
 from service.storage import get_storage_client
 
 
@@ -39,16 +39,19 @@ class DataPreprocessor:
     @staticmethod
     def _unify_datetime(df: pd.DataFrame):
         # exact matches first
+        col = None
         for exact in ["Datetime", "datetime", "日時"]:
             if exact in df.columns:
                 col = exact
                 break
-        else:
-            # fuzzy search as fallback
+
+        # fuzzy search as fallback if no exact match found
+        if col is None:
             cols = [c for c in df.columns if "datetime" in c.lower()]
-        if not cols:
-            return None, None
-        col = cols[0]
+            if not cols:
+                return None, None
+            col = cols[0]
+
         # Normalize to datetime, convert to JST (UTC+9) so downstream analysis uses local hours
         dt_series = pd.to_datetime(df[col], utc=True, errors="coerce")
         dt_series = dt_series.dt.tz_convert("Asia/Tokyo")
@@ -64,14 +67,22 @@ class DataPreprocessor:
         )
         if not dev_col:
             return df
-        
+
         # When removing duplicates, prefer records with "ON" status if "A/C ON/OFF" column exists
         # This ensures we don't lose ON records when duplicates exist after datetime flooring
         if "A/C ON/OFF" in df.columns:
             # Sort so ON records come after OFF (so they're kept when using keep='last')
             df = df.copy()
-            df["_sort_key"] = df["A/C ON/OFF"].astype(str).str.upper().map({"ON": 1, "OFF": 0}).fillna(0)
-            df = df.sort_values(by=[dt_col, dev_col, "_sort_key"], ascending=[True, True, True])
+            df["_sort_key"] = (
+                df["A/C ON/OFF"]
+                .astype(str)
+                .str.upper()
+                .map({"ON": 1, "OFF": 0})
+                .fillna(0)
+            )
+            df = df.sort_values(
+                by=[dt_col, dev_col, "_sort_key"], ascending=[True, True, True]
+            )
             df = df.drop_duplicates(subset=[dt_col, dev_col], keep="last")
             df = df.drop(columns=["_sort_key"])
             return df
