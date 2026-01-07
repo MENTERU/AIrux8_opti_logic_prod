@@ -8,15 +8,10 @@ services:
     volumes:
       - .:/app
     working_dir: /app
-    # command: uv run uvicorn main:app --host=0.0.0.0 --port=8080 --reload
     command: python -m uvicorn main:app --host=0.0.0.0 --port=8080 --reload
     networks:
       - menteru-net
 
-    # 環境変数（必要に応じて追加）
-    # env_file:
-    #   - .env
-    # 再起動ポリシー（開発環境向け）
     ports:
       - "8080:8080"
 
@@ -27,7 +22,7 @@ services:
       - PYTHONUNBUFFERED=1
       - ALLOWED_TRIGGER_PREFIXES=00_InputData/Clea,00_InputData/IsetanMitsukoshi
       # Storage backend configuration (local or gcs)
-      - STORAGE_BACKEND=gcs
+      - STORAGE_BACKEND=local
       - LOCAL_DATA_ROOT=/app/data
       - PROJECT_ID=airux8-opti-logic
       - BUCKET_NAME=airux8-opti-logic-prod

@@ -36,7 +36,17 @@ class Optimizer:
 
     Both modes filter for AC ON status only and support optional forecast hour range filtering.
     """
-
+    # making sure the zone order for the wide format is correct
+    ZONE_ORDER = [
+        "Area 1",
+        "Area2_1",
+        "Area2_2",
+        "Area 3",
+        "Area 4",
+        "Meeting Room",
+        "Break Room",
+    ]
+    
     def __init__(
         self,
         use_operating_hours: bool = False,
@@ -1183,8 +1193,18 @@ class Optimizer:
                 stats["success"] += 1
 
                 # Extract recommended settings from the pattern
-                units_count = best_pattern["A/C ON/OFF"]
-                
+                # prevent physically impossible unit counts
+                # getting number of indoor units from master
+                zone_info = master_data["zones"].get(zone, {})
+                max_units = sum(
+                    len(ou.get("indoor_units", []))
+                    for ou in zone_info.get("outdoor_units", {}).values()
+                )
+
+                units_count = min(
+                    int(best_pattern.get("A/C ON/OFF", 0)),
+                    max_units
+                )                
                 # Handle NaN values before converting to int
                 ac_mode_value = best_pattern["A/C Mode"]
                 if pd.isna(ac_mode_value):
@@ -1297,10 +1317,23 @@ class Optimizer:
         """
         # Load historical patterns
         historical_df = self.load_historical_patterns(features_csv_path)
-
+        
+        # 12 month filter
+        forecast_df["datetime"] = pd.to_datetime(forecast_df["datetime"])
+        historical_df["Datetime"] = pd.to_datetime(historical_df["Datetime"])
+        forecast_max_date = forecast_df["datetime"].max()
+        twelve_months_ago = forecast_max_date - pd.DateOffset(months=12)
+        historical_df = historical_df[
+            ~(
+                (historical_df["zone"].astype(str).str.strip().str.lower() == "area 1")
+                &
+                (historical_df["Datetime"] < twelve_months_ago)
+            )
+        ].copy()
+        
         # Get list of all zones from historical data
         zones = sorted(historical_df["zone"].unique())
-
+        zones = [z for z in self.ZONE_ORDER if z in historical_df["zone"].unique()]
         all_results = []
 
         # Optimize each zone
@@ -1410,8 +1443,11 @@ class Optimizer:
         base_df = base_df.sort_values("datetime").reset_index(drop=True)
 
         # Get unique zones
-        zones = sorted(long_df["zone"].unique())
-
+        zones = [
+            z for z in self.ZONE_ORDER
+            if z in long_df["zone"].unique()
+        ]
+        
         # Create zone-specific columns for each AC setting
         ac_settings = [
             "set_temp",
@@ -1450,6 +1486,111 @@ class Optimizer:
         )
 
         return base_df
+
+    def get_long_format(self, wide_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Convert wide format optimization results to long format.
+
+        This is a public method that can be called after optimize_all_zones to get
+        long format output where each row represents one zone at one datetime.
+
+        Args:
+            wide_df: Wide format DataFrame (from optimize_all_zones)
+
+        Returns:
+            Long format DataFrame with zone column and one row per zone per datetime
+        """
+        return self._convert_to_long_format(wide_df)
+
+    def _convert_to_long_format(self, wide_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Convert wide format optimization results to long format.
+
+        This method converts zone-specific columns (e.g., "Area 1_set_temp", "Area 1_mode")
+        back to a long format where each row represents one zone at one datetime.
+
+        Args:
+            wide_df: Wide format DataFrame with zone-specific columns
+
+        Returns:
+            Long format DataFrame with zone column and standardized column names
+        """
+        if wide_df.empty:
+            return pd.DataFrame()
+
+        # Base columns that are not zone-specific
+        base_columns = ["datetime", "forecast_outdoor_temp", "forecast_solar_radiation"]
+        
+        # AC settings that have zone prefixes
+        ac_settings = [
+            "set_temp",
+            "mode",
+            "fan_speed",
+            "numb_units_on",
+            "ac_on_off",
+            "power",
+            "indoor_temp",
+            "hist_outdoor_temp",
+            "hist_solar_radiation",
+            "hist_indoor_temp",
+            "hist_datetime_used",
+        ]
+
+        # Find all zones by looking for columns with zone prefixes
+        zone_columns = [col for col in wide_df.columns if any(col.startswith(f"{zone}_") for zone in self.ZONE_ORDER)]
+        
+        # Extract unique zones from column names
+        zones_found = set()
+        for col in zone_columns:
+            for zone in self.ZONE_ORDER:
+                if col.startswith(f"{zone}_"):
+                    zones_found.add(zone)
+                    break
+
+        # Order zones according to ZONE_ORDER
+        zones = [zone for zone in self.ZONE_ORDER if zone in zones_found]
+
+        all_long_rows = []
+
+        # For each datetime row in wide format, create a row for each zone
+        for _, row in wide_df.iterrows():
+            datetime_value = row["datetime"]
+            
+            for zone in zones:
+                zone_prefix = f"{zone}_"
+                
+                # Build a row for this zone
+                zone_row = {
+                    "datetime": datetime_value,
+                    "zone": zone,
+                }
+                
+                # Add base columns if they exist in the wide DataFrame
+                if "forecast_outdoor_temp" in wide_df.columns:
+                    zone_row["forecast_outdoor_temp"] = row["forecast_outdoor_temp"]
+                if "forecast_solar_radiation" in wide_df.columns:
+                    zone_row["forecast_solar_radiation"] = row["forecast_solar_radiation"]
+                
+                # Extract zone-specific columns
+                for setting in ac_settings:
+                    zone_col = f"{zone_prefix}{setting}"
+                    if zone_col in wide_df.columns:
+                        zone_row[setting] = row[zone_col]
+                    else:
+                        zone_row[setting] = None
+                
+                all_long_rows.append(zone_row)
+
+        long_df = pd.DataFrame(all_long_rows)
+
+        # Sort by datetime and zone
+        long_df = long_df.sort_values(["datetime", "zone"]).reset_index(drop=True)
+
+        logging.info(
+            f"Converted to long format: {len(long_df)} rows, {len(long_df.columns)} columns"
+        )
+
+        return long_df
 
     def get_unit_format(
         self, zone_wide_df: pd.DataFrame, master_data: dict
