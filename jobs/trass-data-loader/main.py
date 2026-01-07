@@ -229,8 +229,8 @@ def main():
                     query = f"""
                         SELECT DATETIME(Datetime, "Asia/Tokyo") AS Datetime, * EXCEPT (Datetime) 
                         FROM `{GCPEnv.PROJECT_ID}.{store_name}.table_name` 
-                        WHERE DATETIME(Datetime, "Asia/Tokyo") >= DATETIME('{start_date}') 
-                        AND DATETIME(Datetime, "Asia/Tokyo") <= DATETIME('{end_date}')
+                        WHERE Datetime >= TIMESTAMP('{start_date}', "Asia/Tokyo")
+                        AND Datetime <= TIMESTAMP('{end_date}', "Asia/Tokyo")
                     """
 
                     idu_raw = bigquery_client.query(
@@ -297,8 +297,8 @@ def main():
                     },
                 }
 
-                future = publisher.publish(topic, json.dumps(event).encode("utf-8"))
-                future.result()
+                # future = publisher.publish(topic, json.dumps(event).encode("utf-8"))
+                # future.result()
 
                 logging.info(f"✅ [{store_name}] Pub/Sub message published: {event}!")
 
