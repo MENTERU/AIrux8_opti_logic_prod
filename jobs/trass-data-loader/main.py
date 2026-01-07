@@ -297,8 +297,8 @@ def main():
                     },
                 }
 
-                # future = publisher.publish(topic, json.dumps(event).encode("utf-8"))
-                # future.result()
+                future = publisher.publish(topic, json.dumps(event).encode("utf-8"))
+                future.result()
 
                 logging.info(f"✅ [{store_name}] Pub/Sub message published: {event}!")
 
