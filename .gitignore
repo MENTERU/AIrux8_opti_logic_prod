@@ -244,3 +244,4 @@ move-data-to-bigquery/
 archive/
 airux8_web_login_info.json
 job-isetan-data-scraping-sa.json
+github-actions-deployer-key.json
