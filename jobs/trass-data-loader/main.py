@@ -154,8 +154,8 @@ def main():
     Main execution pipeline.
 
     1. Determines time range (defaults to yesterday -> today if not in ENV).
-    2. Iterates through available 'stores' (folders).
-    3. Loads, Composes, and Saves IDU and ODU data for each store.
+    2. Iterates through available 'facilities' (folders).
+    3. Loads, Composes, and Saves IDU and ODU data for each facility.
     """
     try:
         logger.info("🚀 Starting data loading pipeline...")
@@ -195,19 +195,19 @@ def main():
         bigquery_client = bigquery.BigQuery(project_id=GCPEnv.PROJECT_ID)
 
         if GCPEnv.FACILITY_ID:
-            store_names = [GCPEnv.FACILITY_ID]
+            facility_ids = [GCPEnv.FACILITY_ID]
         else:
-            store_names = list_datasets(gc_storage_client)
+            facility_ids = list_datasets(gc_storage_client)
 
-        logger.info(f"Stores detected: {store_names}")
+        logger.info(f"Facilities detected: {facility_ids}")
 
         failed_facilities = set([])
 
-        # Iterate over each store to process specific data
-        for store_name in store_names:
+        # Iterate over each facility to process specific data
+        for facility_id in facility_ids:
 
             try:
-                logger.info(f"📌 Processing store: {store_name}")
+                logger.info(f"📌 Processing facility: {facility_id}")
 
                 output_prefix = os.path.join(
                     (
@@ -215,7 +215,7 @@ def main():
                         if DATA_SOURCE_TYPE == DataSourceType.LOCAL
                         else GCPEnv.LOADED_DATA_PATH
                     ),
-                    store_name,
+                    facility_id,
                 )
 
                 # Ensure output directory exists
@@ -228,7 +228,7 @@ def main():
                     # 1. Load Raw Data
                     query = f"""
                         SELECT DATETIME(Datetime, "Asia/Tokyo") AS Datetime, * EXCEPT (Datetime) 
-                        FROM `{GCPEnv.PROJECT_ID}.{store_name}.table_name` 
+                        FROM `{GCPEnv.PROJECT_ID}.{facility_id}.table_name` 
                         WHERE Datetime >= TIMESTAMP('{start_date}', "Asia/Tokyo")
                         AND Datetime <= TIMESTAMP('{end_date}', "Asia/Tokyo")
                     """
@@ -259,8 +259,8 @@ def main():
                     )
                     logger.info(f"IDU saved: {idu_output}")
                 else:
-                    logger.warning(f"No IDU data to save for store {store_name}")
-                    raise Exception(f"No IDU data to save for store {store_name}")
+                    logger.warning(f"No IDU data to save for facility {facility_id}")
+                    raise Exception(f"No IDU data to save for facility {facility_id}")
 
                 # 4. Save ODU Data
                 if odu is not None and not odu.empty:
@@ -274,24 +274,24 @@ def main():
                     )
                     logger.info(f"ODU saved: {odu_output}")
                 else:
-                    logger.warning(f"No ODU data to save for store {store_name}")
-                    raise Exception(f"No ODU data to save for store {store_name}")
+                    logger.warning(f"No ODU data to save for facility {facility_id}")
+                    raise Exception(f"No ODU data to save for facility {facility_id}")
 
                 publisher = pubsub_v1.PublisherClient()
                 topic = publisher.topic_path(
                     GCPEnv.PROJECT_ID,
-                    f"trigger-svc-central-hvac-preprocess-{store_name}",
+                    f"trigger-svc-central-hvac-preprocess-{facility_id}-{GCPEnv.DEV_ENV}",
                 )
 
                 event = {
                     "specversion": "1.0",
                     "id": str(uuid.uuid4()),
-                    "source": "//run.googleapis.com/services/job-trass-data-loader-prod",
-                    "type": "job-trass-data-loader-prod.complete",
+                    "source": f"//run.googleapis.com/services/job-trass-data-loader-{GCPEnv.DEV_ENV}",
+                    "type": f"job-trass-data-loader-{GCPEnv.DEV_ENV}.complete",
                     "datacontenttype": "application/json",
-                    "subject": "job-trass-data-loader-prod",
+                    "subject": f"job-trass-data-loader-{GCPEnv.DEV_ENV}",
                     "data": {
-                        "facility_id": store_name,
+                        "facility_id": facility_id,
                         "bucket_id": GCPEnv.BUCKET_ID,
                         "gcs_project_id": GCPEnv.PROJECT_ID,
                     },
@@ -300,11 +300,11 @@ def main():
                 future = publisher.publish(topic, json.dumps(event).encode("utf-8"))
                 future.result()
 
-                logging.info(f"✅ [{store_name}] Pub/Sub message published: {event}!")
+                logging.info(f"✅ [{facility_id}] Pub/Sub message published: {event}!")
 
             except Exception as e:
-                logger.error(f"Facility {store_name} failed: {e}")
-                failed_facilities.add(store_name)
+                logger.error(f"Facility {facility_id} failed: {e}")
+                failed_facilities.add(facility_id)
 
         if failed_facilities:
             logger.warning(

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 @dataclass
 class GCPEnv:
     PROJECT_ID = os.environ.get("PROJECT_ID") or "airux8-opti-logic"
-    BUCKET_ID = os.environ.get("BUCKET_ID") or "airux8-opti-logic-prod"
+    BUCKET_ID = os.environ.get("BUCKET_ID") or "airux8-opti-logic-stg"
 
     START_DATE = os.environ.get("START_DATE")
     END_DATE = os.environ.get("END_DATE")
@@ -13,3 +13,5 @@ class GCPEnv:
 
     MASTER_DATA_PATH = os.environ.get("MASTER_DATA_PATH") or "01_MasterData"
     LOADED_DATA_PATH = os.environ.get("LOADED_DATA_PATH") or "06_LoadedData"
+
+    DEV_ENV = os.environ.get("DEV_ENV") or "stg"
