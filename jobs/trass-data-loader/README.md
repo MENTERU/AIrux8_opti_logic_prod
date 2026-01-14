@@ -153,6 +153,10 @@ gcloud projects add-iam-policy-binding airux8-opti-logic \
   --member="serviceAccount:job-trass-data-loader@airux8-opti-logic.iam.gserviceaccount.com" \
   --role="roles/bigquery.admin"
 
+gcloud projects add-iam-policy-binding airux8-opti-logic \
+  --member="serviceAccount:job-trass-data-loader@airux8-opti-logic.iam.gserviceaccount.com" \
+  --role="roles/run.invoker"
+
 ```
 
 ---
