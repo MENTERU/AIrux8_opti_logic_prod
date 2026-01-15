@@ -15,7 +15,6 @@ set -euo pipefail
 
 # --- Config (edit these) ---
 ENV_NAME="main"
-KEY_FILE="github-actions-deployer-key.json"
 
 # --- Core Environment Variables ---
 PROJECT_ID="airux8-opti-logic"
@@ -51,24 +50,30 @@ LOGIN_INFO_SECRET_NAME="AIRUX8_WEB_LOGIN_INFO"
 # --- Preconditions ---
 command -v gh >/dev/null 2>&1 || { echo "[ERROR] gh is not installed."; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "[ERROR] jq is not installed (brew install jq)."; exit 1; }
+command -v gcloud >/dev/null 2>&1 || { echo "[ERROR] gcloud is not installed."; exit 1; }
 
 if ! gh auth status >/dev/null 2>&1; then
   echo "[ERROR] gh is not authenticated. Run: gh auth login"
   exit 1
 fi
 
-if [ ! -f "$KEY_FILE" ]; then
-  echo "[ERROR] Key file not found: $KEY_FILE"
-  exit 1
-fi
 
 # Detect owner/repo from git remote
 REPO_FULL="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
 echo "[INFO] Target repo: $REPO_FULL"
 
 # --- 1) Create repo secrets ---
-echo "[INFO] Setting repo secret: GHA_GCP_AIRUX8_DEPLOYER_SA (from $KEY_FILE)"
-gh secret set GHA_GCP_AIRUX8_DEPLOYER_SA --repo "$REPO_FULL" < "$KEY_FILE"
+echo "[INFO] Setting repo secret: GHA_GCP_AIRUX8_DEPLOYER_SA (from GCP)"
+DEPLOYER_SA_KEY="$(gcloud secrets versions access latest \
+    --secret=GHA_AIRUX8_DEPLOYER_SA \
+    --project=$PROJECT_ID)"
+gh secret set GHA_GCP_AIRUX8_DEPLOYER_SA --repo "$REPO_FULL" --body "$DEPLOYER_SA_KEY"
+
+echo "[INFO] Setting repo secret: MENTERU_TOOLS_DEPLOY_KEY (from GCP)"
+MENTERU_TOOLS_KEY="$(gcloud secrets versions access latest \
+    --secret=MENTERU_TOOLS_DEPLOY_KEY \
+    --project=menteru-insight-prod)"
+gh secret set MENTERU_TOOLS_DEPLOY_KEY --repo "$REPO_FULL" --body "$MENTERU_TOOLS_KEY"
 
 # --- 2) Create environment (prod) if not exists ---
 echo "[INFO] Ensuring environment exists: $ENV_NAME"
@@ -111,7 +116,7 @@ gh variable set LOGIN_INFO_SECRET_NAME --env "$ENV_NAME" --repo "$REPO_FULL" --b
 
 echo ""
 echo "[DONE] ✅ Repo secret + prod env vars configured."
-echo "       Secret:    GHA_GCP_AIRUX8_DEPLOYER_SA (repo-level)"
+echo "       Secret:    GHA_GCP_AIRUX8_DEPLOYER_SA, MENTERU_TOOLS_DEPLOY_KEY (repo-level)"
 echo "       Env Vars:  PROJECT_ID, PROJECT_NUM, REGION, DEV_ENV, OPTIMIZE_ARTIFACT_REPO"
 echo "                  JOB_CLEA_DATA_SCRAPING_SA, JOB_ISETAN_DATA_SCRAPING_SA, JOB_TRASS_DATA_LOADER_SA"
 echo "                  FUNC_CHECK_CLEA_FILES_SA, SVC_AIRUX8_OPTIMIZE_SA"
