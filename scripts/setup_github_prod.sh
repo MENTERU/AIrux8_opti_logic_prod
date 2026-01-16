@@ -72,7 +72,7 @@ gh secret set GHA_GCP_AIRUX8_DEPLOYER_SA --repo "$REPO_FULL" --body "$DEPLOYER_S
 echo "[INFO] Setting repo secret: MENTERU_TOOLS_DEPLOY_KEY (from GCP)"
 MENTERU_TOOLS_KEY="$(gcloud secrets versions access latest \
     --secret=MENTERU_TOOLS_DEPLOY_KEY \
-    --project=menteru-insight-prod)"
+    --project=menteru-insight-prod-481307)"
 gh secret set MENTERU_TOOLS_DEPLOY_KEY --repo "$REPO_FULL" --body "$MENTERU_TOOLS_KEY"
 
 # --- 2) Create environment (prod) if not exists ---
