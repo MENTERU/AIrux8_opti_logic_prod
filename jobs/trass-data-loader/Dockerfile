@@ -30,7 +30,7 @@ RUN mkdir -p /root/.ssh && \
 
 # Install package from private repo + requirements using BuildKit SSH mount
 # NOTE: this requires you to build with --ssh (local) or --ssh forwarded (CI)
-RUN --mount=type=ssh pip install --prefix=/install --no-cache-dir -r requirements.txt
+RUN --mount=type=ssh pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY . .
@@ -40,7 +40,7 @@ FROM python:3.13-slim
 WORKDIR /app
 
 # Copy only installed packages and app code
-COPY --from=builder /install /usr/local
+COPY --from=builder /usr/local /usr/local
 COPY --from=builder /app /app
 
 EXPOSE 8080
